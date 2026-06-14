@@ -1,36 +1,88 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ExecLens
 
-## Getting Started
+**See JavaScript execute** — a step-by-step visualizer for the call stack, microtask queue, callback queue, and event loop. Inspired by [JS Visualizer 9000](https://www.jsv9000.app/).
 
-First, run the development server:
+## Features (v0.1)
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+- Live code editor with **active line highlighting** during playback
+- **Call stack**, **microtask queue**, **callback queue**, and **event loop** panels
+- Step timeline with play / pause / scrub controls
+- Curated examples (event loop, promises, timeouts)
+- JavaScript and TypeScript snippet support (TS compiled via esbuild)
+- Dark/light theme (shadcn-style UI + Framer Motion icons)
+
+## Tech Stack
+
+| Layer | Choice |
+|-------|--------|
+| Framework | Next.js 16 (App Router) |
+| UI | shadcn/ui + Tailwind CSS v4 |
+| Editor | CodeMirror 6 |
+| Runner | Node.js sandbox with patched timers & Promises |
+| TS compile | esbuild |
+
+## Project Structure
+
+Feature-based folders — each domain owns its UI, hooks, and data:
+
+```
+src/
+├── app/                    # Next.js routes + API
+│   └── api/run/            # POST — execute snippet, return steps
+├── features/
+│   ├── editor/             # CodeMirror editor
+│   ├── visualizer/         # Stack, queues, timeline panels
+│   ├── playground/         # Main page composition
+│   └── examples/           # Curated snippets
+├── lib/
+│   └── runner/             # Sandbox + step recorder
+├── components/ui/          # shadcn primitives
+└── types/                  # Shared execution types
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+See [docs/PROJECT_PLAN.md](./docs/PROJECT_PLAN.md) for the full roadmap.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+**For AI agents / new contributors:** read [docs/AGENT_CONTEXT.md](./docs/AGENT_CONTEXT.md) first — why we built this, stack decisions, goals, and codebase map.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Quick Start
 
-## Learn More
+```bash
+# Install
+npm install
 
-To learn more about Next.js, take a look at the following resources:
+# Dev server
+npm run dev
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Open [http://localhost:3000](http://localhost:3000), pick an example, click **Run**, then step through the timeline.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Docker (optional)
 
-## Deploy on Vercel
+For isolated deployment of the full app:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```bash
+docker compose up --build
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## API
+
+`POST /api/run`
+
+```json
+{
+  "code": "console.log('hello');",
+  "language": "javascript"
+}
+```
+
+Returns `{ steps: ExecutionStep[], error?: string, language }`.
+
+## Roadmap Highlights
+
+- Phase 2: Real Node instrumentation (`async_hooks`, V8 inspector)
+- Phase 3: Hoisting, TDZ, scope chain (AST overlay)
+- Phase 4: async/await in sandbox, closures, `this`
+
+## License
+
+MIT

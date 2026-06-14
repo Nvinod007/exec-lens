@@ -1,26 +1,127 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f4f6f8;
+  --foreground: #141820;
+  --card: #ffffff;
+  --card-foreground: #141820;
+  --popover: #ffffff;
+  --popover-foreground: #141820;
+  --primary: #0d9488;
+  --primary-foreground: #ffffff;
+  --secondary: #e8ecef;
+  --secondary-foreground: #141820;
+  --muted: #e8ecef;
+  --muted-foreground: #5c6570;
+  --accent: #dce8e6;
+  --accent-foreground: #141820;
+  --destructive: #dc2626;
+  --border: rgb(20 24 32 / 10%);
+  --input: rgb(20 24 32 / 8%);
+  --ring: #0d9488;
+  --radius: 0.75rem;
+  --stack: #0369a1;
+  --microtask: #7c3aed;
+  --macrotask: #d97706;
+  --highlight: rgb(13 148 136 / 14%);
+  --editor-bg: #fafbfc;
+  --editor-gutter: #eef1f4;
+  --editor-gutter-fg: #8b939e;
+  --editor-fg: #141820;
+  --editor-active: rgb(13 148 136 / 12%);
+  --console-dock: #eef1f4;
+}
+
+.dark {
+  --background: #0e1218;
+  --foreground: #e4e8ed;
+  --card: #151b24;
+  --card-foreground: #e4e8ed;
+  --popover: #151b24;
+  --popover-foreground: #e4e8ed;
+  --primary: #2dd4bf;
+  --primary-foreground: #042f2e;
+  --secondary: #1c2430;
+  --secondary-foreground: #e4e8ed;
+  --muted: #1c2430;
+  --muted-foreground: #7a8494;
+  --accent: #1a2830;
+  --accent-foreground: #e4e8ed;
+  --destructive: #f87171;
+  --border: rgb(255 255 255 / 7%);
+  --input: rgb(255 255 255 / 8%);
+  --ring: #2dd4bf;
+  --stack: #38bdf8;
+  --microtask: #c084fc;
+  --macrotask: #fbbf24;
+  --highlight: rgb(45 212 191 / 14%);
+  --editor-bg: #0a0e14;
+  --editor-gutter: #0e1218;
+  --editor-gutter-fg: #4a5568;
+  --editor-fg: #dce3ea;
+  --editor-active: rgb(45 212 191 / 12%);
+  --console-dock: #0a0e14;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-stack: var(--stack);
+  --color-microtask: var(--microtask);
+  --color-macrotask: var(--macrotask);
+  --color-highlight: var(--highlight);
+  --color-console-dock: var(--console-dock);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@keyframes pulse-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgb(45 212 191 / 35%);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgb(45 212 191 / 0%);
+  }
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 1.5s ease-in-out infinite;
+}
+
+.bg-console-dock {
+  background-color: var(--console-dock);
 }

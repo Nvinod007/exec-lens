@@ -1,0 +1,9 @@
+services:
+  exec-lens:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - MAX_SNIPPET_LENGTH=20000
+      - RUNNER_TIMEOUT_MS=5000
