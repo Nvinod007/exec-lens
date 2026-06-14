@@ -6,13 +6,168 @@ import type {
   RunResult,
 } from "@/types/execution";
 
-import { SandboxPromise } from "@/lib/runner/sandbox-promise";
+import vm from "node:vm";
+
+import {
+  installAsyncInstrumentation,
+  registerAsyncEnter,
+  registerAsyncExit,
+  restoreAsyncInstrumentation,
+  buildAwaitLabel,
+} from "@/lib/runner/async-instrumentation";
+import {
+  captureUserCallSite,
+  createInstrumentedPromise,
+  flushNativeMicrotasks,
+  installPromiseInstrumentation,
+  restorePromiseInstrumentation,
+} from "@/lib/runner/promise-instrumentation";
+import { instrumentUserSource } from "@/lib/runner/instrument-source";
+import { hasActiveUserAsync } from "@/lib/runner/async-context";
+import { runnerDebug } from "@/lib/runner/runner-debug";
+import {
+  collectDueTimers,
+  findEarliestTimer,
+  formatClockAdvanceLabel,
+  formatMacrotaskLabel,
+  formatRunLabel,
+  formatScheduleLabel,
+  formatTimerWebApiEntry,
+  parseTimerDelay,
+  type VirtualTimer,
+} from "@/lib/runner/virtual-clock";
+
+interface RunSnippetOptions {
+  /** Pre-instrumented executable (e.g. esbuild output). Line numbers refer to `userSource`. */
+  executable?: string;
+}
+
+/** Serialize snippet runs so global Promise/async hooks are not torn down mid-flight. */
+let runTurn: Promise<void> = Promise.resolve();
+
+function userLineCount(userSource: string): number {
+  return userSource.split("\n").length;
+}
+
+function isValidUserLine(userSource: string, line: number | undefined): line is number {
+  return line !== undefined && line >= 1 && line <= userLineCount(userSource);
+}
+
+/** Map a callback name back to a line in the editor source when stack capture fails. */
+function resolveNamedSourceLine(userSource: string, name: string): number | undefined {
+  if (
+    !name ||
+    name.startsWith("Promise.") ||
+    name.includes("setTimeout callback") ||
+    name.startsWith("() =>")
+  ) {
+    return undefined;
+  }
+
+  const patterns = [
+    new RegExp(`function\\s+${name}\\b`),
+    new RegExp(`\\.then\\(\\s*function\\s+${name}\\b`),
+    new RegExp(`\\b${name}\\s*[:=]\\s*(?:async\\s+)?function\\b`),
+    new RegExp(`\\b${name}\\s*[:=]\\s*(?:async\\s*)?\\(`),
+  ];
+
+  const lines = userSource.split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    if (patterns.some((pattern) => pattern.test(lines[index]!))) {
+      return index + 1;
+    }
+  }
+
+  return undefined;
+}
+
+function resolveSetTimeoutCallSite(userSource: string, handlerName: string): number | undefined {
+  const escaped = handlerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const patterns = handlerName
+    ? [
+        new RegExp(`setTimeout\\(\\s*${escaped}\\b`),
+        new RegExp(`setTimeout\\(\\s*function\\s+${escaped}\\b`),
+        new RegExp(`setTimeout\\([^)]*resolve\\(['"]${escaped}['"]\\)`),
+      ]
+    : [new RegExp(`setTimeout\\(\\s*\\(`)];
+
+  const lines = userSource.split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    if (patterns.some((pattern) => pattern.test(lines[index]!))) return index + 1;
+  }
+  return undefined;
+}
+
+function resolveThenCallSite(userSource: string, handlerName: string): number | undefined {
+  const pattern = new RegExp(`\\.then\\(\\s*${handlerName}\\b`);
+  const lines = userSource.split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    if (pattern.test(lines[index]!)) return index + 1;
+  }
+  return undefined;
+}
+
+function resolveNewPromiseLine(userSource: string): number | undefined {
+  const index = userSource.split("\n").findIndex((line) => /\bnew\s+Promise\s*\(/.test(line));
+  return index >= 0 ? index + 1 : undefined;
+}
+
+type SourceLineMode = "call-site" | "handler-body";
+
+function resolveSourceLine(
+  userSource: string,
+  capturedLine: number | undefined,
+  mode: SourceLineMode,
+  ...nameHints: string[]
+): number | undefined {
+  for (const name of nameHints) {
+    if (mode === "call-site") {
+      const setTimeoutLine = resolveSetTimeoutCallSite(userSource, name);
+      if (setTimeoutLine !== undefined) return setTimeoutLine;
+      const thenLine = resolveThenCallSite(userSource, name);
+      if (thenLine !== undefined) return thenLine;
+    }
+
+    const namedLine = resolveNamedSourceLine(userSource, name);
+    if (namedLine !== undefined) return namedLine;
+  }
+
+  if (isValidUserLine(userSource, capturedLine)) return capturedLine;
+
+  return undefined;
+}
+
+function findLastActiveLine(ctx: RunnerContext): number | undefined {
+  for (let index = ctx.steps.length - 1; index >= 0; index -= 1) {
+    const line = ctx.steps[index]?.activeLine;
+    if (line !== undefined) return line;
+  }
+  return undefined;
+}
+
+function getSetTimeoutLabel(callback: () => void): string {
+  if (callback.name) return callback.name;
+
+  const source = Function.prototype.toString.call(callback).replace(/\s+/g, " ").trim();
+  if (source.includes("[native code]")) return "setTimeout callback";
+
+  const resolveMatch = source.match(/resolve\s*\(\s*['"]([^'"]+)['"]\s*\)/);
+  if (resolveMatch?.[1]) return resolveMatch[1];
+
+  if (source.startsWith("() =>") || source.startsWith("function")) {
+    return source.length <= 40 ? source : `${source.slice(0, 37)}...`;
+  }
+
+  return "setTimeout callback";
+}
 
 interface PendingTask {
   id: string;
   label: string;
   run: () => void;
   sourceLine?: number;
+  /** Logical delay from setTimeout — shown in step labels. */
+  delay?: number;
 }
 
 interface RunnerContext {
@@ -25,22 +180,76 @@ interface RunnerContext {
   stepCounter: number;
   pendingMicro: PendingTask[];
   pendingMacro: PendingTask[];
+  /** Timers waiting in the Web API until virtual time reaches fireAt. */
+  timers: VirtualTimer[];
+  /** Simulated runtime clock in milliseconds. */
+  virtualTime: number;
+  /** Microtasks shown in the UI — includes native Promise + await continuations. */
+  microtaskDisplay: QueueItem[];
   taskCounter: number;
-  lineMap: Map<string, number>;
   logCounter: number;
+  /** When true, promise/async hooks stop recording steps. */
+  recordingComplete: boolean;
+  userSource: string;
+  runStartedAt: number;
+  maxSteps: number;
+  wallTimeoutMs: number;
 }
 
-/** Tag each console.log call with its source line for accurate output attribution. */
-function instrumentConsoleLogs(source: string): string {
-  return source
-    .split("\n")
-    .map((line, index) =>
-      line.replace(/console\.log\s*\(/g, () => `__consoleLog(${index + 1}, `),
-    )
-    .join("\n");
+function readRunnerLimits() {
+  const maxSteps = Number.parseInt(process.env.MAX_RUNNER_STEPS ?? "5000", 10);
+  const wallTimeoutMs = Number.parseInt(process.env.RUNNER_TIMEOUT_MS ?? "10000", 10);
+  return {
+    maxSteps: Number.isFinite(maxSteps) && maxSteps > 0 ? maxSteps : 5000,
+    wallTimeoutMs: Number.isFinite(wallTimeoutMs) && wallTimeoutMs > 0 ? wallTimeoutMs : 10000,
+  };
+}
+
+function assertWithinRunLimits(ctx: RunnerContext) {
+  if (ctx.steps.length >= ctx.maxSteps) {
+    throw new Error(`Run exceeded the ${ctx.maxSteps} step limit.`);
+  }
+  if (Date.now() - ctx.runStartedAt > ctx.wallTimeoutMs) {
+    throw new Error(`Run exceeded the ${ctx.wallTimeoutMs}ms wall-time limit.`);
+  }
+}
+
+function syncWebApiView(ctx: RunnerContext) {
+  ctx.webApi = ctx.timers.map(formatTimerWebApiEntry);
+}
+
+function popSyncFrame(ctx: RunnerContext, name: string) {
+  const index = ctx.callStack.findLastIndex(
+    (frame) => frame.label === name && !frame.async,
+  );
+  if (index >= 0) {
+    ctx.callStack.splice(index, 1);
+  }
+}
+
+function dequeueAwaitContinuation(ctx: RunnerContext, awaitLabel: string) {
+  const resumeLabel = `Resume after ${awaitLabel}`;
+  const index = ctx.microtaskDisplay.findIndex((item) => item.label === resumeLabel);
+  if (index >= 0) {
+    ctx.microtaskDisplay.splice(index, 1);
+    syncQueueViews(ctx);
+    runnerDebug.log("await continuation dequeued", { resumeLabel });
+  }
+}
+
+function resumeAsyncIfSuspended(ctx: RunnerContext, source: string) {
+  const frame = findTopAsyncFrame(ctx);
+  if (!frame?.suspended) return;
+
+  const awaitingMatch = frame.label.match(/\(awaiting (.+)\)$/);
+  const awaitLabel = awaitingMatch ? `await ${awaitingMatch[1]}` : "await …";
+  dequeueAwaitContinuation(ctx, awaitLabel);
+  recordAwaitResume(ctx, source);
 }
 
 function recordConsoleLog(ctx: RunnerContext, line: number, values: unknown[]) {
+  resumeAsyncIfSuspended(ctx, ctx.userSource);
+
   ctx.logCounter += 1;
 
   ctx.consoleLog.push({
@@ -57,22 +266,10 @@ function recordConsoleLog(ctx: RunnerContext, line: number, values: unknown[]) {
   });
 }
 
-/** Build a stable line map from user source for runtime attribution. */
-function buildLineMap(source: string): Map<string, number> {
-  const map = new Map<string, number>();
-  source.split("\n").forEach((line, index) => {
-    const fnMatch = line.match(/function\s+(\w+)/);
-    if (fnMatch) map.set(fnMatch[1], index + 1);
-    if (line.includes("setTimeout")) map.set("setTimeout", index + 1);
-    if (line.includes("Promise")) map.set("Promise", index + 1);
-    if (line.includes("console.log")) map.set("console.log", index + 1);
-    if (line.includes("queueMicrotask")) map.set("queueMicrotask", index + 1);
-  });
-  return map;
-}
-
 /** Clone queue snapshots so steps remain immutable. */
 function snapshot(ctx: RunnerContext, partial: Partial<ExecutionStep>): ExecutionStep {
+  assertWithinRunLimits(ctx);
+
   const step: ExecutionStep = {
     id: ctx.stepCounter++,
     phase: partial.phase ?? "run-sync",
@@ -94,26 +291,133 @@ function createTaskId(ctx: RunnerContext): string {
 }
 
 function syncQueueViews(ctx: RunnerContext) {
-  ctx.microtaskQueue = ctx.pendingMicro.map((task) => ({
-    id: task.id,
-    label: task.label,
-    sourceLine: task.sourceLine,
-    kind: "microtask" as const,
-  }));
+  ctx.microtaskQueue = ctx.microtaskDisplay.map((item) => ({ ...item }));
   ctx.macrotaskQueue = ctx.pendingMacro.map((task) => ({
     id: task.id,
-    label: task.label,
+    label: formatMacrotaskLabel(task.label, task.delay ?? 0),
     sourceLine: task.sourceLine,
     kind: "macrotask" as const,
   }));
 }
 
-function pushFrame(ctx: RunnerContext, label: string, line?: number) {
-  ctx.callStack.push({ id: createTaskId(ctx), label, line });
+/** Clear live runtime views before terminal complete/error snapshots. */
+function finalizeTerminalSnapshot(ctx: RunnerContext) {
+  ctx.recordingComplete = true;
+  ctx.callStack.length = 0;
+  ctx.microtaskDisplay.length = 0;
+  ctx.pendingMacro.length = 0;
+  ctx.timers.length = 0;
+  syncWebApiView(ctx);
+  syncQueueViews(ctx);
+}
+
+function findLastAwaitLine(ctx: RunnerContext): number | undefined {
+  for (let index = ctx.steps.length - 1; index >= 0; index -= 1) {
+    const step = ctx.steps[index];
+    if (step?.phase === "await-suspend" && step.activeLine !== undefined) {
+      return step.activeLine;
+    }
+  }
+  return undefined;
+}
+
+function scheduleMicrotaskDisplay(
+  ctx: RunnerContext,
+  label: string,
+  sourceLine?: number,
+): string {
+  const id = createTaskId(ctx);
+  ctx.microtaskDisplay.push({
+    id,
+    label,
+    sourceLine,
+    kind: "microtask",
+  });
+  syncQueueViews(ctx);
+  runnerDebug.log("microtask scheduled", {
+    label,
+    sourceLine,
+    queueSize: ctx.microtaskDisplay.length,
+  });
+  return id;
+}
+
+function dequeueMicrotaskDisplay(ctx: RunnerContext, label: string) {
+  const index = ctx.microtaskDisplay.findIndex((item) => item.label === label);
+  if (index >= 0) {
+    ctx.microtaskDisplay.splice(index, 1);
+  } else if (ctx.microtaskDisplay.length > 0) {
+    ctx.microtaskDisplay.shift();
+  }
+  syncQueueViews(ctx);
+  runnerDebug.log("microtask dequeued", {
+    label,
+    queueSize: ctx.microtaskDisplay.length,
+  });
+}
+
+function pushFrame(
+  ctx: RunnerContext,
+  label: string,
+  line?: number,
+  options?: Pick<CallStackFrame, "async" | "suspended">,
+) {
+  const duplicate = ctx.callStack.some(
+    (frame) =>
+      frame.label.replace(/\s+\(awaiting .*\)$/, "") ===
+        label.replace(/\s+\(awaiting .*\)$/, "") &&
+      frame.line === line &&
+      Boolean(frame.async) === Boolean(options?.async),
+  );
+  if (duplicate) return;
+
+  ctx.callStack.push({
+    id: createTaskId(ctx),
+    label,
+    line,
+    async: options?.async,
+    suspended: options?.suspended,
+  });
+}
+
+function findTopAsyncFrame(ctx: RunnerContext): CallStackFrame | undefined {
+  for (let index = ctx.callStack.length - 1; index >= 0; index -= 1) {
+    if (ctx.callStack[index]?.async) return ctx.callStack[index];
+  }
+  return undefined;
+}
+
+function markAsyncSuspended(ctx: RunnerContext, awaitLabel: string) {
+  const frame = findTopAsyncFrame(ctx);
+  if (!frame) return;
+
+  frame.suspended = true;
+  const awaitingText = awaitLabel.startsWith("await ")
+    ? awaitLabel.slice(6)
+    : awaitLabel;
+  const baseLabel = frame.label.replace(/\s+\(awaiting .*\)$/, "");
+  frame.label = `${baseLabel} (awaiting ${awaitingText})`;
+}
+
+function clearAsyncSuspended(ctx: RunnerContext) {
+  const frame = findTopAsyncFrame(ctx);
+  if (!frame) return;
+
+  frame.suspended = false;
+  frame.label = frame.label.replace(/\s+\(awaiting .*\)$/, "");
 }
 
 function popFrame(ctx: RunnerContext) {
   ctx.callStack.pop();
+}
+
+function popGlobalFrame(ctx: RunnerContext) {
+  const index = ctx.callStack.findLastIndex(
+    (frame) => frame.label === "Global" && !frame.async,
+  );
+  if (index >= 0) {
+    ctx.callStack.splice(index, 1);
+  }
 }
 
 function enqueueMicrotask(
@@ -122,13 +426,13 @@ function enqueueMicrotask(
   run: () => void,
   sourceLine?: number,
 ) {
+  const id = scheduleMicrotaskDisplay(ctx, label, sourceLine);
   ctx.pendingMicro.push({
-    id: createTaskId(ctx),
+    id,
     label,
     run,
     sourceLine,
   });
-  syncQueueViews(ctx);
   snapshot(ctx, {
     phase: "schedule-microtask",
     label: `Enqueued microtask: ${label}`,
@@ -136,39 +440,86 @@ function enqueueMicrotask(
   });
 }
 
-function enqueueMacrotask(
+function runMicrotask(
   ctx: RunnerContext,
   label: string,
   run: () => void,
   sourceLine?: number,
 ) {
-  ctx.pendingMacro.push({
-    id: createTaskId(ctx),
-    label,
-    run,
-    sourceLine,
+  dequeueMicrotaskDisplay(ctx, label);
+  pushFrame(ctx, label, sourceLine);
+  snapshot(ctx, {
+    phase: "run-microtask",
+    label: `Running microtask: ${label}`,
+    activeLine: sourceLine,
   });
-  ctx.webApi.push(`${label} → Web API timer`);
+  run();
+  popFrame(ctx);
+}
+
+function registerTimer(
+  ctx: RunnerContext,
+  label: string,
+  callback: () => void,
+  delay: number,
+  sourceLine?: number,
+): string {
+  const id = createTaskId(ctx);
+  const timer: VirtualTimer = {
+    id,
+    label,
+    callback,
+    delay,
+    scheduledAt: ctx.virtualTime,
+    fireAt: ctx.virtualTime + delay,
+    sourceLine,
+  };
+  ctx.timers.push(timer);
+  syncWebApiView(ctx);
   syncQueueViews(ctx);
   snapshot(ctx, {
     phase: "schedule-macrotask",
-    label: `Scheduled macrotask: ${label}`,
+    label: formatScheduleLabel(label, delay),
     activeLine: sourceLine,
   });
+  return id;
+}
+
+function promoteDueTimers(ctx: RunnerContext) {
+  const { due, pending } = collectDueTimers(ctx.timers, ctx.virtualTime);
+  if (due.length === 0) return;
+
+  ctx.timers = pending;
+  syncWebApiView(ctx);
+
+  for (const timer of due) {
+    ctx.pendingMacro.push({
+      id: timer.id,
+      label: timer.label,
+      run: timer.callback,
+      sourceLine: timer.sourceLine,
+      delay: timer.delay,
+    });
+  }
+  syncQueueViews(ctx);
+}
+
+function advanceVirtualClock(ctx: RunnerContext): boolean {
+  const next = findEarliestTimer(ctx.timers);
+  if (!next) return false;
+
+  ctx.virtualTime = next.fireAt;
+  snapshot(ctx, {
+    phase: "event-loop-tick",
+    label: formatClockAdvanceLabel(ctx.virtualTime),
+  });
+  return true;
 }
 
 function drainMicrotasks(ctx: RunnerContext) {
   while (ctx.pendingMicro.length > 0) {
     const task = ctx.pendingMicro.shift()!;
-    syncQueueViews(ctx);
-    pushFrame(ctx, task.label, task.sourceLine);
-    snapshot(ctx, {
-      phase: "run-microtask",
-      label: `Running microtask: ${task.label}`,
-      activeLine: task.sourceLine,
-    });
-    task.run();
-    popFrame(ctx);
+    runMicrotask(ctx, task.label, task.run, task.sourceLine);
   }
 }
 
@@ -183,10 +534,11 @@ function runNextMacrotask(ctx: RunnerContext): boolean {
     activeLine: task.sourceLine,
   });
 
-  pushFrame(ctx, task.label, task.sourceLine);
+  const displayLabel = formatMacrotaskLabel(task.label, task.delay ?? 0);
+  pushFrame(ctx, displayLabel, task.sourceLine);
   snapshot(ctx, {
     phase: "run-macrotask",
-    label: `Running macrotask: ${task.label}`,
+    label: formatRunLabel(task.label, task.delay ?? 0),
     activeLine: task.sourceLine,
   });
   task.run();
@@ -194,49 +546,250 @@ function runNextMacrotask(ctx: RunnerContext): boolean {
   return true;
 }
 
-/** Build the sandbox globals exposed to user snippets. */
-function createSandbox(ctx: RunnerContext) {
-  const bridge = {
-    lineMap: ctx.lineMap,
-    enqueueMicrotask: (label: string, run: () => void, sourceLine?: number) =>
-      enqueueMicrotask(ctx, label, run, sourceLine),
-  };
+async function driveEventLoop(ctx: RunnerContext): Promise<void> {
+  assertWithinRunLimits(ctx);
+  await flushNativeMicrotasks();
+  drainMicrotasks(ctx);
+  promoteDueTimers(ctx);
 
+  while (ctx.timers.length > 0 || ctx.pendingMacro.length > 0) {
+    assertWithinRunLimits(ctx);
+
+    while (ctx.pendingMacro.length > 0) {
+      runNextMacrotask(ctx);
+      await flushNativeMicrotasks();
+      drainMicrotasks(ctx);
+      promoteDueTimers(ctx);
+    }
+
+    if (ctx.timers.length > 0) {
+      advanceVirtualClock(ctx);
+      promoteDueTimers(ctx);
+    } else {
+      break;
+    }
+  }
+
+  if (
+    ctx.timers.length === 0 &&
+    ctx.pendingMacro.length === 0 &&
+    ctx.pendingMicro.length === 0
+  ) {
+    ctx.recordingComplete = true;
+  }
+  await flushNativeMicrotasks();
+  drainMicrotasks(ctx);
+}
+
+function recordAwaitSuspend(ctx: RunnerContext, source: string, line: number) {
+  resumeAsyncIfSuspended(ctx, source);
+
+  const awaitLabel = buildAwaitLabel(source, line);
+  scheduleMicrotaskDisplay(ctx, `Resume after ${awaitLabel}`, line);
+  markAsyncSuspended(ctx, awaitLabel);
+  snapshot(ctx, {
+    phase: "await-suspend",
+    label: `Paused at ${awaitLabel}`,
+    activeLine: line,
+  });
+  runnerDebug.log("await suspend", { line, awaitLabel });
+}
+
+function recordAwaitResume(ctx: RunnerContext, source: string) {
+  const frame = findTopAsyncFrame(ctx);
+  const awaitingMatch = frame?.label.match(/\(awaiting (.+)\)$/);
+  const awaitLabel = awaitingMatch ? `await ${awaitingMatch[1]}` : "await …";
+  const resumeLine = findLastAwaitLine(ctx);
+  clearAsyncSuspended(ctx);
+  snapshot(ctx, {
+    phase: "await-resume",
+    label: `Resumed after ${awaitLabel}`,
+    activeLine: resumeLine,
+  });
+  runnerDebug.log("await resume", { line: resumeLine, awaitLabel });
+}
+
+function createAsyncHooks(ctx: RunnerContext) {
+  return {
+    onAsyncEnter: (name: string, line: number | undefined) => {
+      pushFrame(ctx, name, line, { async: true });
+      snapshot(ctx, {
+        phase: "run-sync",
+        label: `Enter async function ${name}`,
+        activeLine: line,
+      });
+    },
+    onAwaitSuspend: (_label: string, _line: number | undefined) => {
+      /* await suspend/resume snapshots come from promise instrumentation */
+    },
+    onAwaitResume: (_label: string, _line: number | undefined) => {
+      /* await suspend/resume snapshots come from promise instrumentation */
+    },
+    onAsyncExit: (name: string) => {
+      const frame = findTopAsyncFrame(ctx);
+      const baseLabel = frame?.label.replace(/\s+\(awaiting .*\)$/, "");
+      if (baseLabel === name) {
+        popFrame(ctx);
+      }
+    },
+  };
+}
+
+function isInternalFallbackLabel(label: string): boolean {
+  return /^Promise\.then\(#\d+\)$/.test(label);
+}
+
+function createPromiseHooks(ctx: RunnerContext, source: string) {
+  return {
+    onScheduleMicrotask: (label: string, sourceLine?: number, options?: { queueDisplay?: boolean; displayOnly?: boolean }) => {
+      if (ctx.recordingComplete || isInternalFallbackLabel(label)) return;
+
+      const suspendedAsync = hasActiveUserAsync() && findTopAsyncFrame(ctx)?.suspended;
+      if (
+        !options?.displayOnly &&
+        suspendedAsync &&
+        ctx.microtaskDisplay.some((item) => item.label.startsWith("Resume after "))
+      ) {
+        runnerDebug.log("promise schedule (await continuation, display unchanged)", { label });
+        return;
+      }
+
+      const line = resolveSourceLine(source, sourceLine, "call-site", label);
+      if (options?.queueDisplay !== false) {
+        scheduleMicrotaskDisplay(ctx, label, line);
+      }
+      if (options?.displayOnly) return;
+
+      runnerDebug.log("promise schedule", { label, sourceLine: line, async: hasActiveUserAsync() });
+      snapshot(ctx, {
+        phase: "schedule-microtask",
+        label: `Enqueued microtask: ${label}`,
+        activeLine: line,
+      });
+    },
+    onRunMicrotask: (label: string, sourceLine: number | undefined, run: () => void) => {
+      if (isInternalFallbackLabel(label)) {
+        run();
+        return;
+      }
+      if (ctx.recordingComplete) {
+        run();
+        return;
+      }
+
+      const line = resolveSourceLine(source, sourceLine, "call-site", label);
+      resumeAsyncIfSuspended(ctx, source);
+      runMicrotask(ctx, label, run, line);
+    },
+    onPromiseExecutor: (
+      label: string,
+      sourceLine: number | undefined,
+      run: () => void,
+    ) => {
+      const line =
+        (isValidUserLine(source, sourceLine) ? sourceLine : undefined) ??
+        resolveNewPromiseLine(source);
+      pushFrame(ctx, label, line);
+      snapshot(ctx, {
+        phase: "run-sync",
+        label: "Running Promise executor",
+        activeLine: line,
+      });
+      run();
+      popFrame(ctx);
+    },
+  };
+}
+
+/** Build the sandbox globals exposed to user snippets. */
+function createSandbox(
+  ctx: RunnerContext,
+  PromiseCtor: typeof Promise,
+  userSource: string,
+  sourceLineOffset: number,
+) {
   return {
     console: {
       log: (...values: unknown[]) => {
-        recordConsoleLog(ctx, ctx.lineMap.get("console.log") ?? 1, values);
+        recordConsoleLog(ctx, 1, values);
       },
     },
     __consoleLog: (line: number, ...values: unknown[]) => {
       recordConsoleLog(ctx, line, values);
     },
-    setTimeout: (callback: () => void, _delay?: number) => {
-      const line = ctx.lineMap.get("setTimeout");
-      enqueueMacrotask(ctx, callback.name || "setTimeout callback", callback, line);
-      return createTaskId(ctx);
+    __execLensAsyncEnter: (name: string, line: number) => {
+      registerAsyncEnter(name, line);
     },
-    Promise: {
-      resolve: (value: unknown) => SandboxPromise.resolve(bridge, value),
+    __execLensAsyncExit: (name: string) => {
+      registerAsyncExit(name);
     },
-    queueMicrotask: (callback: () => void) => {
-      const line = ctx.lineMap.get("queueMicrotask");
-      enqueueMicrotask(
-        ctx,
-        callback.name || "queueMicrotask callback",
-        callback,
-        line,
+    __execLensSyncEnter: (name: string, line: number) => {
+      pushFrame(ctx, name, line);
+      snapshot(ctx, {
+        phase: "run-sync",
+        label: `Enter function ${name}`,
+        activeLine: line,
+      });
+      runnerDebug.log("sync enter", { name, line });
+    },
+    __execLensSyncExit: (name: string) => {
+      popSyncFrame(ctx, name);
+      runnerDebug.log("sync exit", { name });
+    },
+    __execLensAwaitWrap: (line: number, value: unknown) => {
+      recordAwaitSuspend(ctx, userSource, line);
+      return value;
+    },
+    setTimeout: (callback: () => void, delay?: number) => {
+      const parsedDelay = parseTimerDelay(delay);
+      const label = getSetTimeoutLabel(callback);
+      const sourceLine = resolveSourceLine(
+        userSource,
+        captureUserCallSite(sourceLineOffset),
+        "call-site",
+        label,
       );
+      return registerTimer(ctx, label, callback, parsedDelay, sourceLine);
+    },
+    setInterval: () => {
+      throw new Error("setInterval is not supported in ExecLens.");
+    },
+    Promise: PromiseCtor,
+    queueMicrotask: (callback: () => void) => {
+      const label = callback.name || "queueMicrotask callback";
+      enqueueMicrotask(ctx, label, callback);
     },
   };
 }
 
 /**
- * Execute a JS snippet inside a sandbox and record event-loop steps.
- * Patched timers and Promises produce deterministic queue visualization.
+ * Execute a JS snippet with native Promise instrumentation and record event-loop steps.
+ * Pass `executable` when TypeScript was compiled after instrumenting the editor source.
  */
-export async function runJavaScriptSnippet(source: string): Promise<RunResult> {
-  const instrumented = instrumentConsoleLogs(source);
+export async function runJavaScriptSnippet(
+  userSource: string,
+  options: RunSnippetOptions = {},
+): Promise<RunResult> {
+  const priorTurn = runTurn;
+  let releaseTurn!: () => void;
+  runTurn = new Promise<void>((resolve) => {
+    releaseTurn = resolve;
+  });
+  await priorTurn;
+
+  try {
+    return await executeJavaScriptSnippet(userSource, options);
+  } finally {
+    releaseTurn();
+  }
+}
+
+async function executeJavaScriptSnippet(
+  userSource: string,
+  options: RunSnippetOptions = {},
+): Promise<RunResult> {
+  const instrumented = options.executable ?? instrumentUserSource(userSource);
+  const limits = readRunnerLimits();
   const ctx: RunnerContext = {
     callStack: [],
     microtaskQueue: [],
@@ -247,30 +800,61 @@ export async function runJavaScriptSnippet(source: string): Promise<RunResult> {
     stepCounter: 0,
     pendingMicro: [],
     pendingMacro: [],
+    timers: [],
+    virtualTime: 0,
+    microtaskDisplay: [],
     taskCounter: 0,
-    lineMap: buildLineMap(source),
     logCounter: 0,
+    recordingComplete: false,
+    userSource,
+    runStartedAt: Date.now(),
+    maxSteps: limits.maxSteps,
+    wallTimeoutMs: limits.wallTimeoutMs,
   };
 
-  const sandbox = createSandbox(ctx);
+  const sourceLineOffset = 1;
+  const promiseHooks = createPromiseHooks(ctx, userSource);
+  const asyncHooks = createAsyncHooks(ctx);
+  let runtimeError: string | undefined;
 
-  snapshot(ctx, {
-    phase: "evaluate-script",
-    label: "Evaluate script — global execution context created",
-    activeLine: 1,
-  });
+  const onUnhandledRejection = (reason: unknown) => {
+    runtimeError =
+      reason instanceof Error ? reason.message : String(reason ?? "Unhandled rejection");
+  };
 
-  pushFrame(ctx, "Global", 1);
+  process.on("unhandledRejection", onUnhandledRejection);
 
   try {
-    const runner = new Function(
-      "__consoleLog",
-      "console",
-      "setTimeout",
-      "Promise",
-      "queueMicrotask",
-      `"use strict";\n${instrumented}`,
+    installPromiseInstrumentation(promiseHooks, sourceLineOffset);
+    installAsyncInstrumentation(asyncHooks, userSource, sourceLineOffset);
+
+    const InstrumentedPromise = createInstrumentedPromise(
+      Promise,
+      promiseHooks,
+      sourceLineOffset,
     );
+    const sandbox = createSandbox(ctx, InstrumentedPromise, userSource, sourceLineOffset);
+
+    snapshot(ctx, {
+      phase: "evaluate-script",
+      label: "Evaluate script — global execution context created",
+      activeLine: 1,
+    });
+
+    pushFrame(ctx, "Global", 1);
+    const vmSandbox = {
+      __consoleLog: sandbox.__consoleLog,
+      __execLensAsyncEnter: sandbox.__execLensAsyncEnter,
+      __execLensAsyncExit: sandbox.__execLensAsyncExit,
+      __execLensSyncEnter: sandbox.__execLensSyncEnter,
+      __execLensSyncExit: sandbox.__execLensSyncExit,
+      __execLensAwaitWrap: sandbox.__execLensAwaitWrap,
+      console: sandbox.console,
+      setTimeout: sandbox.setTimeout,
+      setInterval: sandbox.setInterval,
+      Promise: sandbox.Promise,
+      queueMicrotask: sandbox.queueMicrotask,
+    };
 
     snapshot(ctx, {
       phase: "run-sync",
@@ -278,38 +862,58 @@ export async function runJavaScriptSnippet(source: string): Promise<RunResult> {
       activeLine: 1,
     });
 
-    runner(
-      sandbox.__consoleLog,
-      sandbox.console,
-      sandbox.setTimeout,
-      sandbox.Promise,
-      sandbox.queueMicrotask,
-    );
+    vm.runInNewContext(`"use strict";\n${instrumented}`, vmSandbox, {
+      timeout: ctx.wallTimeoutMs,
+      filename: "exec-lens-snippet.js",
+    });
 
-    popFrame(ctx);
+    popGlobalFrame(ctx);
 
-    while (ctx.pendingMicro.length > 0 || ctx.pendingMacro.length > 0) {
-      drainMicrotasks(ctx);
-      if (!runNextMacrotask(ctx)) break;
+    await driveEventLoop(ctx);
+
+    if (runtimeError) {
+      const errorLine = findLastAwaitLine(ctx);
+      finalizeTerminalSnapshot(ctx);
+      snapshot(ctx, {
+        phase: "error",
+        label: `Unhandled rejection: ${runtimeError}`,
+        activeLine: errorLine,
+      });
+      return {
+        steps: ctx.steps,
+        error: runtimeError,
+        errorLine,
+        language: "javascript",
+      };
     }
 
-    drainMicrotasks(ctx);
+    finalizeTerminalSnapshot(ctx);
 
     snapshot(ctx, {
       phase: "complete",
       label: "Execution complete — call stack empty",
+      activeLine: findLastActiveLine(ctx),
     });
 
     return { steps: ctx.steps, language: "javascript" };
   } catch (error) {
+    const rawMessage = error instanceof Error ? error.message : "Unknown runtime error";
+    const message = rawMessage.includes("Script execution timed out")
+      ? `Run exceeded the ${ctx.wallTimeoutMs}ms wall-time limit.`
+      : rawMessage;
+    finalizeTerminalSnapshot(ctx);
     snapshot(ctx, {
       phase: "error",
-      label: error instanceof Error ? error.message : "Unknown runtime error",
+      label: `Runtime error: ${message}`,
     });
     return {
       steps: ctx.steps,
-      error: error instanceof Error ? error.message : "Unknown runtime error",
+      error: message,
       language: "javascript",
     };
+  } finally {
+    process.off("unhandledRejection", onUnhandledRejection);
+    restoreAsyncInstrumentation();
+    restorePromiseInstrumentation();
   }
 }

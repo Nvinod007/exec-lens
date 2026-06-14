@@ -29,7 +29,11 @@ const LOOP_STEPS = [
   },
   {
     label: "3. Run all Microtasks",
-    phases: new Set<ExecutionStep["phase"]>(["run-microtask"]),
+    phases: new Set<ExecutionStep["phase"]>([
+      "run-microtask",
+      "await-suspend",
+      "await-resume",
+    ]),
   },
   {
     label: "4. Complete",

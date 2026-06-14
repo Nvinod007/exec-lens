@@ -4,9 +4,13 @@ import { javascript } from "@codemirror/lang-javascript";
 import { lintGutter } from "@codemirror/lint";
 import { EditorState } from "@codemirror/state";
 import { EditorView, lineNumbers, highlightActiveLineGutter } from "@codemirror/view";
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 import { createBreakpointGutter } from "@/features/editor/lib/breakpoint-gutter";
+import {
+  createEditorShortcutKeymap,
+  type EditorShortcutHandlers,
+} from "@/features/editor/lib/editor-shortcut-keymap";
 import { createSnippetLinter } from "@/features/editor/lib/snippet-linter";
 import {
   setStepLineEffect,
@@ -21,6 +25,7 @@ interface CodeEditorProps {
   errorLine?: number;
   breakpoints?: number[];
   onToggleBreakpoint?: (line: number) => void;
+  editorShortcuts?: EditorShortcutHandlers;
   readOnly?: boolean;
 }
 
@@ -46,7 +51,8 @@ const editorTheme = EditorView.theme({
     backgroundColor: "var(--editor-active)",
   },
   ".cm-stepLine": {
-    backgroundColor: "var(--editor-active)",
+    backgroundColor: "var(--editor-active) !important",
+    boxShadow: "inset 3px 0 0 var(--primary)",
   },
   ".cm-content": { caretColor: "var(--editor-fg)" },
   "&.cm-focused .cm-cursor": { borderLeftColor: "var(--editor-fg)" },
@@ -54,6 +60,40 @@ const editorTheme = EditorView.theme({
     backgroundImage: "none",
     backgroundColor: "color-mix(in oklch, var(--destructive) 22%, transparent)",
     borderBottom: "2px wavy var(--destructive)",
+  },
+  ".cm-lintRange-active": {
+    backgroundColor: "color-mix(in oklch, var(--destructive) 14%, transparent)",
+  },
+  ".cm-tooltip": {
+    backgroundColor: "var(--popover)",
+    color: "var(--popover-foreground)",
+    border: "1px solid var(--border)",
+    borderRadius: "var(--radius-sm)",
+    boxShadow: "0 4px 12px rgb(0 0 0 / 18%)",
+  },
+  ".cm-tooltip-lint": {
+    padding: 0,
+    margin: 0,
+  },
+  ".cm-diagnostic": {
+    color: "var(--popover-foreground)",
+  },
+  ".cm-diagnostic-error": {
+    borderLeftColor: "var(--destructive)",
+  },
+  ".cm-diagnostic-warning": {
+    borderLeftColor: "var(--macrotask)",
+  },
+  ".cm-diagnostic-info": {
+    borderLeftColor: "var(--muted-foreground)",
+  },
+  ".cm-diagnosticAction": {
+    backgroundColor: "var(--secondary)",
+    color: "var(--secondary-foreground)",
+  },
+  ".cm-diagnosticSource": {
+    color: "var(--muted-foreground)",
+    opacity: 1,
   },
   ".cm-breakpoint-gutter": { width: "14px" },
   ".cm-breakpoint-dot": {
@@ -77,6 +117,7 @@ export function CodeEditor({
   errorLine,
   breakpoints = [],
   onToggleBreakpoint,
+  editorShortcuts,
   readOnly = false,
 }: CodeEditorProps) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -84,13 +125,44 @@ export function CodeEditor({
   const onChangeRef = useRef(onChange);
   const breakpointsRef = useRef(breakpoints);
   const onToggleRef = useRef(onToggleBreakpoint);
+  const editorShortcutsRef = useRef(editorShortcuts);
+  const highlightLineRef = useRef<number | undefined>(undefined);
 
   onChangeRef.current = onChange;
   breakpointsRef.current = breakpoints;
   onToggleRef.current = onToggleBreakpoint;
+  editorShortcutsRef.current = editorShortcuts;
+
+  const highlightLine = errorLine ?? activeLine;
+  highlightLineRef.current = highlightLine;
+
+  const applyStepHighlight = useCallback((view: EditorView, line: number | undefined) => {
+    view.dispatch({
+      effects: setStepLineEffect.of(line),
+    });
+
+    if (!line || line < 1 || line > view.state.doc.lines || view.hasFocus) return;
+
+    const docLine = view.state.doc.line(line);
+    view.dispatch({
+      effects: EditorView.scrollIntoView(docLine.from, { y: "center" }),
+    });
+  }, []);
 
   useEffect(() => {
     if (!hostRef.current) return;
+
+    const shortcutKeymap = createEditorShortcutKeymap({
+      onRun: () => editorShortcutsRef.current?.onRun?.(),
+      runDisabled: () => editorShortcutsRef.current?.runDisabled?.() ?? false,
+      onPlayToggle: () => editorShortcutsRef.current?.onPlayToggle?.(),
+      onFirst: () => editorShortcutsRef.current?.onFirst?.(),
+      onPrev: () => editorShortcutsRef.current?.onPrev?.(),
+      onNext: () => editorShortcutsRef.current?.onNext?.(),
+      onLast: () => editorShortcutsRef.current?.onLast?.(),
+      playbackEnabled: () => editorShortcutsRef.current?.playbackEnabled?.() ?? false,
+      canPlay: () => editorShortcutsRef.current?.canPlay?.() ?? false,
+    });
 
     const state = EditorState.create({
       doc: value,
@@ -104,6 +176,7 @@ export function CodeEditor({
             )
           : []),
         createSnippetLinter(language),
+        ...shortcutKeymap,
         highlightActiveLineGutter(),
         stepLineField,
         javascript({ typescript: true }),
@@ -117,13 +190,13 @@ export function CodeEditor({
 
     const view = new EditorView({ state, parent: hostRef.current });
     viewRef.current = view;
+    applyStepHighlight(view, highlightLineRef.current);
 
     return () => {
       view.destroy();
       viewRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [language, readOnly]);
+  }, [applyStepHighlight, language, readOnly]);
 
   useEffect(() => {
     const view = viewRef.current;
@@ -141,25 +214,11 @@ export function CodeEditor({
     viewRef.current?.dispatch({});
   }, [breakpoints]);
 
-  const highlightLine = errorLine ?? activeLine;
-
   useEffect(() => {
     const view = viewRef.current;
     if (!view) return;
-
-    view.dispatch({
-      effects: setStepLineEffect.of(highlightLine),
-    });
-
-    if (!highlightLine || view.hasFocus) return;
-
-    const line = view.state.doc.line(
-      Math.min(Math.max(highlightLine, 1), view.state.doc.lines),
-    );
-    view.dispatch({
-      effects: EditorView.scrollIntoView(line.from, { y: "center" }),
-    });
-  }, [highlightLine]);
+    applyStepHighlight(view, highlightLine);
+  }, [applyStepHighlight, highlightLine]);
 
   return (
     <div

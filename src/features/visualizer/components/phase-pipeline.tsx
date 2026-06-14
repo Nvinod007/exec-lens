@@ -53,6 +53,8 @@ function getActivePhase(phase: ExecutionStep["phase"]): (typeof PHASES)[number][
     case "event-loop-tick":
       return "task";
     case "run-microtask":
+    case "await-suspend":
+    case "await-resume":
       return "micro";
     case "complete":
     case "error":
@@ -66,12 +68,19 @@ function getActivePhase(phase: ExecutionStep["phase"]): (typeof PHASES)[number][
 
 /** Horizontal event-loop phase rail with tooltips on each step. */
 export function PhasePipeline({ step, isRunning = false }: PhasePipelineProps) {
+  const isError = step?.phase === "error";
   const active = getActivePhase(step?.phase ?? "evaluate-script");
 
   return (
     <div className="flex items-center gap-0.5">
       {PHASES.map((phase, index) => {
+        const isLast = index === PHASES.length - 1;
         const isActive = phase.id === active;
+        const label = isLast && isError ? "Error" : phase.label;
+        const tip =
+          isLast && isError
+            ? "Execution stopped due to an unhandled error — stack and queues are cleared."
+            : phase.tip;
         return (
           <div key={phase.id} className="flex min-w-0 flex-1 items-center gap-0.5">
             <Tooltip>
@@ -80,19 +89,19 @@ export function PhasePipeline({ step, isRunning = false }: PhasePipelineProps) {
                   className={cn(
                     "flex min-w-0 flex-1 cursor-help flex-col items-center rounded-lg px-1 py-1.5 transition-all",
                     isActive
-                      ? "bg-primary/15 text-primary ring-1 ring-primary/30"
+                      ? isError && isLast
+                        ? "bg-destructive/15 text-destructive ring-1 ring-destructive/30"
+                        : "bg-primary/15 text-primary ring-1 ring-primary/30"
                       : "text-muted-foreground opacity-60",
                     isRunning && isActive && "animate-pulse",
                   )}
                 >
                   <span className="font-mono text-xs font-bold">{phase.short}</span>
-                  <span className="hidden truncate text-xs font-medium sm:block">
-                    {phase.label}
-                  </span>
+                  <span className="hidden truncate text-xs font-medium sm:block">{label}</span>
                 </div>
               </TooltipTrigger>
               <TooltipContent className="bg-popover text-popover-foreground border-border max-w-[200px] border text-xs">
-                {phase.tip}
+                {tip}
               </TooltipContent>
             </Tooltip>
             {index < PHASES.length - 1 ? (

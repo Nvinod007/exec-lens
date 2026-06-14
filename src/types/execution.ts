@@ -3,6 +3,10 @@ export interface CallStackFrame {
   id: string;
   label: string;
   line?: number;
+  /** True when this frame belongs to an async function. */
+  async?: boolean;
+  /** True when the frame is paused at an await. */
+  suspended?: boolean;
 }
 
 /** Item waiting in the microtask or macrotask queue. */
@@ -35,6 +39,8 @@ export interface ExecutionStep {
     | "schedule-macrotask"
     | "run-microtask"
     | "run-macrotask"
+    | "await-suspend"
+    | "await-resume"
     | "console"
     | "event-loop-tick"
     | "complete"

@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import { HintLabel } from "@/components/shared/hint-label";
 
 type Accent = "teal" | "amber" | "rose" | "slate";
+type Surface = "default" | "recessed";
 
 const accentBorder: Record<Accent, string> = {
   teal: "border-l-teal-400",
@@ -12,11 +13,17 @@ const accentBorder: Record<Accent, string> = {
   slate: "border-l-border",
 };
 
+const surfaceStyles: Record<Surface, string> = {
+  default: "bg-card border-border/60",
+  recessed: "bg-panel-surface border-border/60",
+};
+
 interface LensPanelProps {
   label: string;
   tooltip: string;
   hint?: string;
   accent?: Accent;
+  surface?: Surface;
   className?: string;
   children: ReactNode;
 }
@@ -27,13 +34,15 @@ export function LensPanel({
   tooltip,
   hint,
   accent = "slate",
+  surface = "default",
   className,
   children,
 }: LensPanelProps) {
   return (
     <section
       className={cn(
-        "bg-card/50 flex min-h-0 flex-col overflow-hidden rounded-xl border border-border/50 border-l-[3px]",
+        "flex min-h-0 flex-col overflow-hidden rounded-xl border border-l-[3px]",
+        surfaceStyles[surface],
         accentBorder[accent],
         className,
       )}

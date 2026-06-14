@@ -39,7 +39,14 @@ export function CallStackPanel({ frames }: CallStackPanelProps) {
                   exit={{ opacity: 0, y: 8 }}
                   className="bg-panel-item rounded border border-black/10 px-3 py-2 font-mono text-sm shadow-sm dark:border-white/10"
                 >
-                  {frame.label}
+                  <span className="flex items-center gap-2">
+                    <span>{frame.label}</span>
+                    {frame.async ? (
+                      <span className="rounded bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-sky-700 dark:text-sky-300">
+                        {frame.suspended ? "await" : "async"}
+                      </span>
+                    ) : null}
+                  </span>
                   {index === 0 ? (
                     <span className="float-right text-[10px] font-bold opacity-70">
                       top

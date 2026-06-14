@@ -4,12 +4,15 @@
 
 ## Features (v0.1)
 
+- **Native Promise** and **async/await** execution with real Node instrumentation
+- **Virtual clock** for `setTimeout` — logical delays (`+5000ms`) without real wait time
 - Live code editor with **active line highlighting** during playback
 - **Call stack**, **microtask queue**, **callback queue**, and **event loop** panels
 - Step timeline with play / pause / scrub controls
 - Curated examples (event loop, promises, timeouts)
 - JavaScript and TypeScript snippet support (TS compiled via esbuild)
 - Dark/light theme (shadcn-style UI + Framer Motion icons)
+- Keyboard shortcuts for run and step playback — see [KEYBOARD_SHORTCUTS.md](./KEYBOARD_SHORTCUTS.md)
 
 ## Tech Stack
 
@@ -18,7 +21,7 @@
 | Framework | Next.js 16 (App Router) |
 | UI | shadcn/ui + Tailwind CSS v4 |
 | Editor | CodeMirror 6 |
-| Runner | Node.js sandbox with patched timers & Promises |
+| Runner | Node.js — native `Promise`, `async_hooks`, virtual timer clock |
 | TS compile | esbuild |
 
 ## Project Structure
@@ -56,13 +59,17 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000), pick an example, click **Run**, then step through the timeline.
 
+Keyboard shortcuts: [KEYBOARD_SHORTCUTS.md](./KEYBOARD_SHORTCUTS.md) (`Mod+Enter` to run; `F7` / `F8` / `F9` to step while editing).
+
 ## Docker (optional)
 
-For isolated deployment of the full app:
+Isolated deployment with memory limits and runner timeouts (see `.env.example`):
 
 ```bash
 docker compose up --build
 ```
+
+Env keys: `RUNNER_TIMEOUT_MS`, `MAX_RUNNER_STEPS`, `MAX_SNIPPET_LENGTH`.
 
 ## API
 
@@ -79,9 +86,9 @@ Returns `{ steps: ExecutionStep[], error?: string, language }`.
 
 ## Roadmap Highlights
 
-- Phase 2: Real Node instrumentation (`async_hooks`, V8 inspector)
+- Phase 2 ✅ Real async engine (Promises, async/await, virtual clock)
 - Phase 3: Hoisting, TDZ, scope chain (AST overlay)
-- Phase 4: async/await in sandbox, closures, `this`
+- Phase 4: Share URLs, guided modules, E2E
 
 ## License
 

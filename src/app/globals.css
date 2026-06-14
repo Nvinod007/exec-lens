@@ -4,35 +4,36 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --background: #f4f6f8;
+  --background: #e2e6eb;
   --foreground: #141820;
-  --card: #ffffff;
+  --card: #eceef2;
   --card-foreground: #141820;
-  --popover: #ffffff;
+  --panel-surface: #d8dde3;
+  --popover: #eceef2;
   --popover-foreground: #141820;
   --primary: #0d9488;
   --primary-foreground: #ffffff;
-  --secondary: #e8ecef;
+  --secondary: #d8dde3;
   --secondary-foreground: #141820;
-  --muted: #e8ecef;
+  --muted: #d8dde3;
   --muted-foreground: #5c6570;
-  --accent: #dce8e6;
+  --accent: #cfd6dc;
   --accent-foreground: #141820;
   --destructive: #dc2626;
-  --border: rgb(20 24 32 / 10%);
-  --input: rgb(20 24 32 / 8%);
+  --border: rgb(20 24 32 / 14%);
+  --input: rgb(20 24 32 / 10%);
   --ring: #0d9488;
   --radius: 0.75rem;
   --stack: #0369a1;
   --microtask: #7c3aed;
   --macrotask: #d97706;
   --highlight: rgb(13 148 136 / 14%);
-  --editor-bg: #fafbfc;
-  --editor-gutter: #eef1f4;
-  --editor-gutter-fg: #8b939e;
+  --editor-bg: #d9dee4;
+  --editor-gutter: #cdd3da;
+  --editor-gutter-fg: #6b7580;
   --editor-fg: #141820;
-  --editor-active: rgb(13 148 136 / 12%);
-  --console-dock: #eef1f4;
+  --editor-active: rgb(13 148 136 / 16%);
+  --console-dock: #d4d9e0;
 }
 
 .dark {
@@ -40,6 +41,7 @@
   --foreground: #e4e8ed;
   --card: #151b24;
   --card-foreground: #e4e8ed;
+  --panel-surface: #151b24;
   --popover: #151b24;
   --popover-foreground: #e4e8ed;
   --primary: #2dd4bf;
@@ -71,6 +73,7 @@
   --color-foreground: var(--foreground);
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
+  --color-panel-surface: var(--panel-surface);
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);

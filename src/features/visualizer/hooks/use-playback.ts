@@ -106,5 +106,12 @@ export function useRunSnippet() {
     [],
   );
 
-  return { run, runState, result, error, errorLine };
+  const reset = useCallback(() => {
+    setRunState("idle");
+    setResult(null);
+    setError(null);
+    setErrorLine(undefined);
+  }, []);
+
+  return { run, reset, runState, result, error, errorLine };
 }

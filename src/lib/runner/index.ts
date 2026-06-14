@@ -3,6 +3,7 @@ import {
   parseSyntaxError,
   validateJavaScript,
 } from "@/lib/validate-snippet";
+import { instrumentUserSource } from "@/lib/runner/instrument-source";
 import { runJavaScriptSnippet } from "@/lib/runner/run-snippet";
 import type { RunResult } from "@/types/execution";
 
@@ -21,12 +22,13 @@ export async function runSnippet(
   if (options.language === "typescript") {
     const esbuild = await import("esbuild");
     try {
-      const result = await esbuild.transform(source, {
+      const instrumented = instrumentUserSource(source);
+      const result = await esbuild.transform(instrumented, {
         loader: "ts",
         target: "es2020",
         format: "cjs",
       });
-      const output = await runJavaScriptSnippet(result.code);
+      const output = await runJavaScriptSnippet(source, { executable: result.code });
       return { ...output, language: "typescript" };
     } catch (error) {
       const issue = parseSyntaxError(error);

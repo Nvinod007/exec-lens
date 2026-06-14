@@ -1,0 +1,42 @@
+# Keyboard Shortcuts
+
+ExecLens uses **context-aware** shortcuts. Plain keys like `←` and `Space` control playback when focus is outside the editor. While you are typing in the snippet editor, **F-keys** handle playback so arrow keys still move the cursor.
+
+On macOS, **Mod** = `⌘`. On Windows/Linux, **Mod** = `Ctrl`.
+
+Hover any toolbar button to see its shortcut in the UI.
+
+## Run
+
+| Action | Shortcut |
+|--------|----------|
+| Run snippet | `Mod+Enter` |
+
+Works everywhere, including while the editor is focused.
+
+## Playback (after Run)
+
+| Action | Outside editor | While editing |
+|--------|----------------|---------------|
+| Play / Pause | `Space` | `F8` |
+| Previous step | `←` | `F7` |
+| Next step | `→` | `F9` |
+| First step | `Mod+←` | `Shift+F7` |
+| Last step | `Mod+→` | `Shift+F9` |
+| Reset to first step | `Mod+Shift+R` | — |
+
+Reset only works when focus is outside the editor (`Mod+Shift+R` reloads the page on some browsers when the editor is focused).
+
+## Tips
+
+- Run a snippet first — playback shortcuts are active only after a successful run.
+- Click a panel or the timeline row to use arrow keys and `Space` for stepping.
+- Stay in the editor and use **F7 / F8 / F9** to step without leaving the keyboard.
+
+## macOS reference
+
+| Key | Label |
+|-----|-------|
+| Mod | `⌘` |
+| Shift | `⇧` |
+| Enter | `↵` |

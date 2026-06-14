@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { GripHorizontal } from "lucide-react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 
+import { ActionTooltip } from "@/components/shared/action-tooltip";
 import { HintLabel } from "@/components/shared/hint-label";
 import { formatConsoleTimestamp } from "@/lib/utils";
 import type { ConsoleEntry } from "@/types/execution";
@@ -48,15 +49,17 @@ export function ConsoleDock({ entries, position, onReposition }: ConsoleDockProp
       data-position={position}
     >
       <div className="flex shrink-0 items-center gap-2 px-3 py-1.5">
-        <div
-          role="button"
-          tabIndex={0}
-          onPointerDown={onGripDrag}
-          className="text-muted-foreground hover:text-primary flex cursor-grab items-center rounded p-0.5 active:cursor-grabbing"
-          aria-label="Drag toward top or bottom to move output panel"
-        >
-          <GripHorizontal className="size-4" />
-        </div>
+        <ActionTooltip label="Move">
+          <div
+            role="button"
+            tabIndex={0}
+            onPointerDown={onGripDrag}
+            className="text-muted-foreground hover:text-primary flex cursor-grab items-center rounded p-0.5 active:cursor-grabbing"
+            aria-label="Move output panel"
+          >
+            <GripHorizontal className="size-4" />
+          </div>
+        </ActionTooltip>
         <HintLabel
           label="Output"
           tip="console.log results with wall-clock timestamps and source line numbers. Drag the grip to dock at top; resize for height."
@@ -82,7 +85,7 @@ export function ConsoleDock({ entries, position, onReposition }: ConsoleDockProp
                 animate={{ opacity: 1, x: 0 }}
                 className="flex gap-2 py-0.5"
               >
-                <span className="text-muted-foreground/80 w-[6.5rem] shrink-0 tabular-nums">
+                <span className="text-muted-foreground/80 w-[9rem] shrink-0 whitespace-nowrap tabular-nums">
                   {entry.timestamp != null
                     ? formatConsoleTimestamp(entry.timestamp)
                     : "—"}

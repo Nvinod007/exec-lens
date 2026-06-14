@@ -6,4 +6,6 @@ services:
     environment:
       - NODE_ENV=production
       - MAX_SNIPPET_LENGTH=20000
-      - RUNNER_TIMEOUT_MS=5000
+      - RUNNER_TIMEOUT_MS=10000
+      - MAX_RUNNER_STEPS=5000
+    mem_limit: 512m

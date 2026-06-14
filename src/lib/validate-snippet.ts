@@ -59,5 +59,5 @@ export function parseSyntaxError(error: unknown): SyntaxIssue | null {
 }
 
 export function formatSyntaxIssue(issue: SyntaxIssue): string {
-  return `Line ${issue.line}: ${issue.message}`;
+  return issue.message;
 }
