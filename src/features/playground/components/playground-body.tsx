@@ -32,6 +32,8 @@ interface PlaygroundBodyProps {
   onEditorRatioChange: (ratio: number) => void;
   onConsolePositionChange: (position: ConsolePosition) => void;
   onConsoleRatioChange: (ratio: number) => void;
+  currentStepPanelCollapsed: boolean;
+  onCurrentStepPanelCollapsedChange: (collapsed: boolean) => void;
 }
 
 /** Main content — dockable console above or below the editor/runtime workspace. */
@@ -57,6 +59,8 @@ export function PlaygroundBody({
   onEditorRatioChange,
   onConsolePositionChange,
   onConsoleRatioChange,
+  currentStepPanelCollapsed,
+  onCurrentStepPanelCollapsedChange,
 }: PlaygroundBodyProps) {
   const workspace = (
     <PlaygroundWorkspace
@@ -76,6 +80,8 @@ export function PlaygroundBody({
       onCodeChange={onCodeChange}
       onToggleBreakpoint={onToggleBreakpoint}
       onEditorRatioChange={onEditorRatioChange}
+      currentStepPanelCollapsed={currentStepPanelCollapsed}
+      onCurrentStepPanelCollapsedChange={onCurrentStepPanelCollapsedChange}
     />
   );
 

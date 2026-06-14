@@ -22,16 +22,20 @@ export function PlaygroundPage() {
     consolePosition,
     setConsolePosition,
     consoleRatio,
+    currentStepPanelCollapsed,
+    setCurrentStepPanelCollapsed,
     runState,
     error,
     errorLine,
+    teachingHint,
     steps,
     playback,
     currentStep,
     stackFrames,
     consoleEntries,
     isStale,
-    showPlayback,
+    showRunResults,
+    showPlaybackControls,
     editorMin,
     editorMax,
     handleRun,
@@ -44,7 +48,7 @@ export function PlaygroundPage() {
     setConsoleRatioSafe,
   } = usePlaygroundState();
 
-  const canPlay = showPlayback && runState !== "running";
+  const canPlay = showPlaybackControls && runState !== "running";
 
   const editorShortcuts = useMemo(
     () => ({
@@ -55,7 +59,7 @@ export function PlaygroundPage() {
       onPrev: playback.stepBackward,
       onNext: playback.stepForward,
       onLast: playback.goToEnd,
-      playbackEnabled: () => showPlayback,
+      playbackEnabled: () => showPlaybackControls,
       canPlay: () => canPlay,
     }),
     [
@@ -67,13 +71,13 @@ export function PlaygroundPage() {
       playback.stepBackward,
       playback.stepForward,
       runState,
-      showPlayback,
+      showPlaybackControls,
     ],
   );
 
   usePlaygroundShortcuts({
     isRunning: runState === "running",
-    showPlayback,
+    showPlayback: showPlaybackControls,
     canPlay,
     onRun: handleRun,
     onPlayToggle: () => playback.setIsPlaying((v) => !v),
@@ -89,18 +93,21 @@ export function PlaygroundPage() {
       <div className="flex h-dvh flex-col overflow-hidden bg-background">
         <PlaygroundHeader
           stackFrames={stackFrames}
+          currentStep={showRunResults ? currentStep : undefined}
           breakpointCount={breakpoints.length}
-          currentStepIndex={showPlayback ? playback.currentIndex : 0}
-          totalSteps={showPlayback ? playback.totalSteps : 0}
+          currentStepIndex={showRunResults ? playback.currentIndex : 0}
+          totalSteps={showRunResults ? playback.totalSteps : 0}
           editorPlacement={editorPlacement}
           selectedExample={selectedExample}
           language={language}
           runState={runState}
-          showPlayback={showPlayback}
+          showRunResults={showRunResults}
+          showPlaybackControls={showPlaybackControls}
           isPlaying={playback.isPlaying}
           isStale={isStale}
           error={error ?? undefined}
           errorLine={errorLine}
+          teachingHint={teachingHint}
           onEditorPlacementChange={setEditorPlacementSafe}
           onExampleChange={handleExampleChange}
           onLanguageChange={handleLanguageChange}
@@ -136,6 +143,8 @@ export function PlaygroundPage() {
             onEditorRatioChange={setEditorRatioSafe}
             onConsolePositionChange={setConsolePosition}
             onConsoleRatioChange={setConsoleRatioSafe}
+            currentStepPanelCollapsed={currentStepPanelCollapsed}
+            onCurrentStepPanelCollapsedChange={setCurrentStepPanelCollapsed}
           />
         </main>
       </div>

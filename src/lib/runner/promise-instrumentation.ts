@@ -1,5 +1,6 @@
 import type { CallStackFrame, ExecutionStep } from "@/types/execution";
 
+import type { SourceLineResolver } from "@/lib/ast/source-map";
 import { hasActiveUserAsync, markThenPatchedExecution } from "@/lib/runner/async-context";
 
 const MAX_LABEL_LENGTH = 60;
@@ -38,8 +39,7 @@ interface CallbackMeta {
 
 interface PromiseInstrumentationState {
   hooks: PromiseInstrumentationHooks;
-  /** 1-based line offset: `"use strict"` prepended before user source. */
-  sourceLineOffset: number;
+  sourceLineResolver: SourceLineResolver;
   originals: {
     then: typeof Promise.prototype.then;
     catch: typeof Promise.prototype.catch;
@@ -110,14 +110,12 @@ function scheduleInstrumentedMicrotask(
   state.hooks.onScheduleMicrotask(label, sourceLine, { queueDisplay: false });
 }
 
-/** Map eval `<anonymous>` line numbers back to user source lines. */
+/** Map eval `<anonymous>` line numbers back to editor source lines. */
 export function toUserSourceLine(
   evalLine: number | undefined,
-  sourceLineOffset: number,
+  sourceLineResolver: SourceLineResolver,
 ): number | undefined {
-  if (evalLine === undefined) return undefined;
-  const userLine = evalLine - sourceLineOffset;
-  return userLine >= 1 ? userLine : undefined;
+  return sourceLineResolver.fromEvalLine(evalLine);
 }
 
 function getRawStack(): string | undefined {
@@ -126,7 +124,9 @@ function getRawStack(): string | undefined {
 }
 
 /** Resolve the first user snippet frame from a stack trace. */
-export function captureUserCallSite(sourceLineOffset: number): number | undefined {
+export function captureUserCallSite(
+  sourceLineResolver: SourceLineResolver,
+): number | undefined {
   const stack = getRawStack();
   if (!stack) return undefined;
 
@@ -142,12 +142,12 @@ export function captureUserCallSite(sourceLineOffset: number): number | undefine
 
     const anonymousMatch = frame.match(/<anonymous>:(\d+):\d+/);
     if (anonymousMatch) {
-      return toUserSourceLine(Number(anonymousMatch[1]), sourceLineOffset);
+      return sourceLineResolver.fromEvalLine(Number(anonymousMatch[1]));
     }
 
     const evalMatch = frame.match(/eval.*?:(\d+):\d+/);
     if (evalMatch) {
-      return toUserSourceLine(Number(evalMatch[1]), sourceLineOffset);
+      return sourceLineResolver.fromEvalLine(Number(evalMatch[1]));
     }
   }
 
@@ -179,7 +179,7 @@ function getHandlerLabel(
   return source || fallback;
 }
 
-function shouldInstrumentPromiseCall(sourceLineOffset: number): boolean {
+function shouldInstrumentPromiseCall(sourceLineResolver: SourceLineResolver): boolean {
   if (internalPromiseDepth > 0) return false;
 
   if (hasActiveUserAsync()) return true;
@@ -193,10 +193,10 @@ function shouldInstrumentPromiseCall(sourceLineOffset: number): boolean {
   if (hasUserFrame) return true;
   if (stack.includes("node_modules/next") || stack.includes("next/dist")) return false;
   if (stack.includes("promise-instrumentation") || stack.includes("run-snippet")) {
-    return captureUserCallSite(sourceLineOffset) !== undefined;
+    return captureUserCallSite(sourceLineResolver) !== undefined;
   }
 
-  return captureUserCallSite(sourceLineOffset) !== undefined;
+  return captureUserCallSite(sourceLineResolver) !== undefined;
 }
 
 function wrapHandler(
@@ -260,12 +260,12 @@ function patchPromisePrototype(state: PromiseInstrumentationState) {
       );
     }
 
-    const callSiteLine = captureUserCallSite(state.sourceLineOffset);
+    const callSiteLine = captureUserCallSite(state.sourceLineResolver);
     const primaryHandler = hasFulfilled ? onFulfilled : onRejected;
     const fallback = `Promise.then(#${microtaskCounter++})`;
     const label = getHandlerLabel(primaryHandler, fallback);
 
-    if (!shouldInstrumentPromiseCall(state.sourceLineOffset)) {
+    if (!shouldInstrumentPromiseCall(state.sourceLineResolver)) {
       return originals.then.call(
         this,
         onFulfilled as Parameters<typeof originals.then>[0],
@@ -318,11 +318,11 @@ function patchPromisePrototype(state: PromiseInstrumentationState) {
     this: Promise<unknown>,
     onFinally: unknown,
   ) {
-    const callSiteLine = captureUserCallSite(state.sourceLineOffset);
+    const callSiteLine = captureUserCallSite(state.sourceLineResolver);
     const fallback = `Promise.finally(#${microtaskCounter++})`;
     const label = getHandlerLabel(onFinally, fallback);
 
-    if (!shouldInstrumentPromiseCall(state.sourceLineOffset)) {
+    if (!shouldInstrumentPromiseCall(state.sourceLineResolver)) {
       return originals.finally.call(this, onFinally as () => unknown);
     }
     const wrappedFinally =
@@ -369,7 +369,7 @@ function patchPromisePrototype(state: PromiseInstrumentationState) {
 export function createInstrumentedPromise(
   NativePromise: typeof Promise,
   hooks: PromiseInstrumentationHooks,
-  sourceLineOffset: number,
+  sourceLineResolver: SourceLineResolver,
 ): typeof Promise {
   function InstrumentedPromise(
     this: unknown,
@@ -384,7 +384,7 @@ export function createInstrumentedPromise(
       );
     }
 
-    const executorLine = captureUserCallSite(sourceLineOffset);
+    const executorLine = captureUserCallSite(sourceLineResolver);
     const promiseBox: { p?: Promise<unknown> } = {};
 
     promiseBox.p = new NativePromise((resolve, reject) => {
@@ -442,7 +442,7 @@ export function flushNativeMicrotasks(): Promise<void> {
 
 export function installPromiseInstrumentation(
   hooks: PromiseInstrumentationHooks,
-  sourceLineOffset = 1,
+  sourceLineResolver: SourceLineResolver,
 ): void {
   if (activeState?.patched) {
     restorePromiseInstrumentation();
@@ -450,7 +450,7 @@ export function installPromiseInstrumentation(
 
   const state: PromiseInstrumentationState = {
     hooks,
-    sourceLineOffset,
+    sourceLineResolver,
     originals: {
       then: Promise.prototype.then,
       catch: Promise.prototype.catch,

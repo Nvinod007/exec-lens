@@ -1,5 +1,6 @@
 import async_hooks from "node:async_hooks";
 
+import type { SourceLineResolver } from "@/lib/ast/source-map";
 import {
   clearThenPatchedExecution,
   getActiveAsyncName,
@@ -32,7 +33,7 @@ interface TrackedAwait {
 interface AsyncInstrumentationState {
   hooks: AsyncInstrumentationHooks;
   source: string;
-  sourceLineOffset: number;
+  sourceLineResolver: SourceLineResolver;
   trackedAwaits: Map<number, TrackedAwait>;
   hook: async_hooks.AsyncHook;
 }
@@ -44,7 +45,7 @@ function getRawStack(): string | undefined {
 }
 
 function parseUserAsyncFrame(
-  sourceLineOffset: number,
+  sourceLineResolver: SourceLineResolver,
 ): { name: string; line?: number } | undefined {
   const stack = getRawStack();
   if (!stack) return undefined;
@@ -64,7 +65,7 @@ function parseUserAsyncFrame(
     if (asyncMatch) {
       return {
         name: asyncMatch[1],
-        line: toUserSourceLine(Number(asyncMatch[2]), sourceLineOffset),
+        line: toUserSourceLine(Number(asyncMatch[2]), sourceLineResolver),
       };
     }
 
@@ -72,7 +73,7 @@ function parseUserAsyncFrame(
     if (fnMatch && fnMatch[1] !== "Object" && fnMatch[1] !== "Function") {
       return {
         name: fnMatch[1],
-        line: toUserSourceLine(Number(fnMatch[2]), sourceLineOffset),
+        line: toUserSourceLine(Number(fnMatch[2]), sourceLineResolver),
       };
     }
   }
@@ -83,7 +84,7 @@ function parseUserAsyncFrame(
 function resolveAwaitLine(
   source: string,
   frameLine: number | undefined,
-  sourceLineOffset: number,
+  sourceLineResolver: SourceLineResolver,
 ): number | undefined {
   if (frameLine) {
     const lines = source.split("\n");
@@ -100,7 +101,7 @@ function resolveAwaitLine(
     }
   }
 
-  return captureUserCallSite(sourceLineOffset);
+  return captureUserCallSite(sourceLineResolver);
 }
 
 export function buildAwaitLabel(source: string, line: number | undefined): string {
@@ -122,7 +123,7 @@ export function buildAwaitLabel(source: string, line: number | undefined): strin
 function shouldTrackAwaitInit(state: AsyncInstrumentationState): boolean {
   if (isThenPatchedExecution()) return false;
 
-  const frame = parseUserAsyncFrame(state.sourceLineOffset);
+  const frame = parseUserAsyncFrame(state.sourceLineResolver);
   if (!frame) return false;
 
   const activeName = getActiveAsyncName();
@@ -152,12 +153,12 @@ function createAsyncHook(state: AsyncInstrumentationState): async_hooks.AsyncHoo
       if (type !== "PROMISE" || activeState !== state) return;
       if (!shouldTrackAwaitInit(state)) return;
 
-      const frame = parseUserAsyncFrame(state.sourceLineOffset);
+      const frame = parseUserAsyncFrame(state.sourceLineResolver);
       if (!frame) return;
 
       const awaitLine =
-        captureUserCallSite(state.sourceLineOffset) ??
-        resolveAwaitLine(state.source, frame.line, state.sourceLineOffset);
+        captureUserCallSite(state.sourceLineResolver) ??
+        resolveAwaitLine(state.source, frame.line, state.sourceLineResolver);
       const label = buildAwaitLabel(state.source, awaitLine);
 
       state.trackedAwaits.set(asyncId, {
@@ -204,7 +205,7 @@ function createAsyncHook(state: AsyncInstrumentationState): async_hooks.AsyncHoo
 export function installAsyncInstrumentation(
   hooks: AsyncInstrumentationHooks,
   source: string,
-  sourceLineOffset = 1,
+  sourceLineResolver: SourceLineResolver,
 ): void {
   if (activeState) {
     restoreAsyncInstrumentation();
@@ -213,7 +214,7 @@ export function installAsyncInstrumentation(
   const state: AsyncInstrumentationState = {
     hooks,
     source,
-    sourceLineOffset,
+    sourceLineResolver,
     trackedAwaits: new Map(),
     hook: undefined as unknown as async_hooks.AsyncHook,
   };

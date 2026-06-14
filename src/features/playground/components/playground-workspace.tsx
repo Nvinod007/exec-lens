@@ -6,7 +6,11 @@ import {
 } from "@/features/playground/lib/layout-constants";
 import { RuntimeDashboard } from "@/features/visualizer/components/runtime-dashboard";
 import type { EditorShortcutHandlers } from "@/features/editor/lib/editor-shortcut-keymap";
-import type { CallStackFrame, ExecutionStep } from "@/types/execution";
+import {
+  getStepEditorLine,
+  type CallStackFrame,
+  type ExecutionStep,
+} from "@/types/execution";
 
 interface PlaygroundWorkspaceProps {
   editorPlacement: EditorPlacement;
@@ -25,6 +29,8 @@ interface PlaygroundWorkspaceProps {
   onCodeChange: (code: string) => void;
   onToggleBreakpoint: (line: number) => void;
   onEditorRatioChange: (ratio: number) => void;
+  currentStepPanelCollapsed: boolean;
+  onCurrentStepPanelCollapsedChange: (collapsed: boolean) => void;
 }
 
 /** Resizable editor + runtime dashboard — placement-aware split direction. */
@@ -45,6 +51,8 @@ export function PlaygroundWorkspace({
   onCodeChange,
   onToggleBreakpoint,
   onEditorRatioChange,
+  currentStepPanelCollapsed,
+  onCurrentStepPanelCollapsedChange,
 }: PlaygroundWorkspaceProps) {
   const editorPane = (
     <PlaygroundEditorPane
@@ -52,7 +60,7 @@ export function PlaygroundWorkspace({
       language={language}
       errorLine={errorLine}
       isStale={isStale}
-      activeLine={currentStep?.activeLine}
+      activeLine={getStepEditorLine(currentStep)}
       breakpoints={breakpoints}
       onChange={onCodeChange}
       onToggleBreakpoint={onToggleBreakpoint}
@@ -65,8 +73,9 @@ export function PlaygroundWorkspace({
       <RuntimeDashboard
         step={currentStep}
         frames={stackFrames}
-        breakpoints={breakpoints}
         isRunning={isRunning}
+        currentStepPanelCollapsed={currentStepPanelCollapsed}
+        onCurrentStepPanelCollapsedChange={onCurrentStepPanelCollapsedChange}
       />
     </section>
   );

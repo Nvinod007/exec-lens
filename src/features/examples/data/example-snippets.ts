@@ -208,4 +208,111 @@ logMessage(message);
 
 Promise.resolve().then(() => console.log('typed microtask'));`,
   },
+  {
+    id: "closure-loop-var",
+    title: "Closure Loop (var)",
+    category: "closures",
+    description: "Classic var + setTimeout loop — one shared i captured by every callback",
+    language: "javascript",
+    code: `console.log('start');
+
+for (var i = 0; i < 3; i++) {
+  setTimeout(function logIndex() {
+    console.log(i);
+  }, 0);
+}
+
+console.log('end');`,
+  },
+  {
+    id: "closure-counter",
+    title: "Closure Counter",
+    category: "closures",
+    description: "Inner function closes over count in the outer frame",
+    language: "javascript",
+    code: `function makeCounter() {
+  let count = 0;
+  return function increment() {
+    count++;
+    console.log(count);
+  };
+}
+
+const inc = makeCounter();
+inc();
+inc();`,
+  },
+  {
+    id: "hoisting-quiz",
+    title: "Hoisting Quiz",
+    category: "hoisting",
+    description: "var and function declarations are lifted before the first line runs",
+    language: "javascript",
+    code: `console.log(typeof fn);
+console.log(typeof x);
+console.log(x);
+
+var x = 5;
+function fn() {
+  return 'hoisted';
+}
+
+console.log(fn());`,
+  },
+  {
+    id: "tdz-throw",
+    title: "TDZ Error",
+    category: "hoisting",
+    description: "Accessing let before its line throws — caught before runtime",
+    language: "javascript",
+    code: `console.log(a);
+let a = 1;`,
+  },
+  {
+    id: "this-method-call",
+    title: "Method Call this",
+    category: "this-binding",
+    description: "obj.method() binds this to the receiver object",
+    language: "javascript",
+    code: `const user = {
+  name: 'Ada',
+  greet() {
+    console.log(this.name);
+  },
+};
+
+user.greet();`,
+  },
+  {
+    id: "this-strict-undefined",
+    title: "Strict Unbound this",
+    category: "this-binding",
+    description: "A plain function call in strict mode leaves this as undefined",
+    language: "javascript",
+    code: `function standalone() {
+  console.log(this);
+}
+
+standalone();`,
+  },
+  {
+    id: "this-arrow-lexical",
+    title: "Arrow Lexical this",
+    category: "this-binding",
+    description: "An arrow in an object literal inherits this from the enclosing method",
+    language: "javascript",
+    code: `const outer = {
+  label: 'outer',
+  run() {
+    const inner = {
+      go: () => {
+        console.log(this.label);
+      },
+    };
+    inner.go();
+  },
+};
+
+outer.run();`,
+  },
 ];

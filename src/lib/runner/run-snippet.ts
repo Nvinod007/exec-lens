@@ -1,9 +1,14 @@
 import type {
   CallStackFrame,
+  ClosureCapture,
   ConsoleEntry,
   ExecutionStep,
+  HoistedBindingView,
   QueueItem,
   RunResult,
+  ScopeBinding,
+  ScopeBindingKind,
+  ThisBinding,
 } from "@/types/execution";
 
 import vm from "node:vm";
@@ -23,6 +28,10 @@ import {
   restorePromiseInstrumentation,
 } from "@/lib/runner/promise-instrumentation";
 import { instrumentUserSource } from "@/lib/runner/instrument-source";
+import {
+  createSourceLineResolver,
+  type SourceLineResolver,
+} from "@/lib/ast/source-map";
 import { hasActiveUserAsync } from "@/lib/runner/async-context";
 import { runnerDebug } from "@/lib/runner/runner-debug";
 import {
@@ -40,6 +49,10 @@ import {
 interface RunSnippetOptions {
   /** Pre-instrumented executable (e.g. esbuild output). Line numbers refer to `userSource`. */
   executable?: string;
+  /** Maps compiled/runtime stack lines back to editor lines (TypeScript source maps). */
+  sourceLineResolver?: SourceLineResolver;
+  /** Hoisted bindings from static analysis — emitted as a teaching step before run-sync. */
+  hoisted?: HoistedBindingView[];
 }
 
 /** Serialize snippet runs so global Promise/async hooks are not torn down mid-flight. */
@@ -191,9 +204,16 @@ interface RunnerContext {
   /** When true, promise/async hooks stop recording steps. */
   recordingComplete: boolean;
   userSource: string;
+  sourceLineResolver: SourceLineResolver;
   runStartedAt: number;
   maxSteps: number;
   wallTimeoutMs: number;
+  /** Live bindings per call-stack frame id — copied into each step snapshot. */
+  frameBindings: Map<string, Map<string, ScopeBinding>>;
+  /** Captured outer bindings keyed by `${label}:${line}` when a closure is created. */
+  closureRegistry: Map<string, ClosureCapture[]>;
+  /** Active closure captures per call-stack frame id. */
+  frameClosureCaptures: Map<string, ClosureCapture[]>;
 }
 
 function readRunnerLimits() {
@@ -247,6 +267,29 @@ function resumeAsyncIfSuspended(ctx: RunnerContext, source: string) {
   recordAwaitResume(ctx, source);
 }
 
+function editorStepLines(
+  line: number | undefined,
+): Pick<ExecutionStep, "activeLine" | "sourceLine" | "sourceLineMapped"> {
+  if (line === undefined) return {};
+  return { activeLine: line, sourceLine: line, sourceLineMapped: true };
+}
+
+/** Editor/inject/source-map line when known; otherwise heuristic activeLine only. */
+function stepLinesFromResolve(
+  userSource: string,
+  capturedLine: number | undefined,
+  mode: SourceLineMode,
+  ...nameHints: string[]
+): Pick<ExecutionStep, "activeLine" | "sourceLine" | "sourceLineMapped"> {
+  if (isValidUserLine(userSource, capturedLine)) {
+    return editorStepLines(capturedLine);
+  }
+
+  const resolved = resolveSourceLine(userSource, capturedLine, mode, ...nameHints);
+  if (resolved === undefined) return {};
+  return { activeLine: resolved };
+}
+
 function recordConsoleLog(ctx: RunnerContext, line: number, values: unknown[]) {
   resumeAsyncIfSuspended(ctx, ctx.userSource);
 
@@ -262,11 +305,167 @@ function recordConsoleLog(ctx: RunnerContext, line: number, values: unknown[]) {
   snapshot(ctx, {
     phase: "console",
     label: `console.log(${values.map(String).join(", ")})`,
-    activeLine: line,
+    ...editorStepLines(line),
   });
 }
 
-/** Clone queue snapshots so steps remain immutable. */
+function formatScopeValue(value: unknown): string {
+  if (value === undefined) return "undefined";
+  if (value === null) return "null";
+  if (typeof value === "function") {
+    return value.name ? `[Function: ${value.name}]` : "[Function]";
+  }
+  if (typeof value === "object") {
+    try {
+      const json = JSON.stringify(value);
+      if (json !== undefined) {
+        return json.length > 80 ? `${json.slice(0, 77)}...` : json;
+      }
+    } catch {
+      return "[object Object]";
+    }
+    return "[object Object]";
+  }
+  return String(value);
+}
+
+type ThisRecordKind = "function" | "arrow";
+
+function classifyThisBinding(
+  ctx: RunnerContext,
+  recordKind: ThisRecordKind,
+  thisValue: unknown,
+): ThisBinding {
+  const value = formatScopeValue(thisValue);
+
+  if (recordKind === "arrow") {
+    const outerFrame = ctx.callStack.length >= 2 ? ctx.callStack[ctx.callStack.length - 2] : undefined;
+    return {
+      value,
+      kind: "lexical-arrow",
+      lexicalFrom: outerFrame?.label ?? "Global",
+    };
+  }
+
+  if (thisValue === undefined) {
+    return { value: "undefined", kind: "strict-undefined" };
+  }
+
+  if (typeof thisValue === "object" && thisValue !== null) {
+    return { value, kind: "method" };
+  }
+
+  return { value, kind: "global" };
+}
+
+function recordThisBinding(
+  ctx: RunnerContext,
+  recordKind: ThisRecordKind,
+  thisValue: unknown,
+) {
+  const frame = ctx.callStack.at(-1);
+  if (!frame) return;
+  frame.thisBinding = classifyThisBinding(ctx, recordKind, thisValue);
+}
+
+const GLOBAL_THIS_BINDING: ThisBinding = {
+  value: "undefined",
+  kind: "strict-undefined",
+};
+
+function recordScopeBinding(
+  ctx: RunnerContext,
+  name: string,
+  kind: ScopeBindingKind | null,
+  value: unknown,
+) {
+  const frame = ctx.callStack.at(-1);
+  if (!frame) return;
+
+  let bindings = ctx.frameBindings.get(frame.id);
+  if (!bindings) {
+    bindings = new Map();
+    ctx.frameBindings.set(frame.id, bindings);
+  }
+
+  const existing = bindings.get(name);
+  const bindingKind = kind ?? existing?.kind ?? "let";
+  bindings.set(name, {
+    name,
+    kind: bindingKind,
+    value: formatScopeValue(value),
+  });
+}
+
+function buildScopeSnapshot(ctx: RunnerContext): Record<string, ScopeBinding[]> {
+  const scopes: Record<string, ScopeBinding[]> = {};
+  for (const frame of ctx.callStack) {
+    const bindings = ctx.frameBindings.get(frame.id);
+    scopes[frame.id] = bindings
+      ? [...bindings.values()].sort((left, right) => left.name.localeCompare(right.name))
+      : [];
+  }
+  return scopes;
+}
+
+function buildClosureCaptureSnapshot(
+  ctx: RunnerContext,
+): Record<string, ClosureCapture[]> {
+  const captures: Record<string, ClosureCapture[]> = {};
+  for (const frame of ctx.callStack) {
+    const frameCaptures = ctx.frameClosureCaptures.get(frame.id);
+    if (frameCaptures?.length) {
+      captures[frame.id] = frameCaptures.map((capture) => ({ ...capture }));
+    }
+  }
+  return captures;
+}
+
+function closureRegistryKey(label: string, line: number): string {
+  return `${label}:${line}`;
+}
+
+function lookupClosureCaptures(
+  ctx: RunnerContext,
+  name: string,
+  line: number,
+): ClosureCapture[] | undefined {
+  return (
+    ctx.closureRegistry.get(closureRegistryKey(name, line)) ??
+    ctx.closureRegistry.get(closureRegistryKey("anonymous", line))
+  );
+}
+
+function resolveClosureCaptures(
+  ctx: RunnerContext,
+  names: string[],
+): ClosureCapture[] {
+  const captures: ClosureCapture[] = [];
+  const seen = new Set<string>();
+
+  for (const name of names) {
+    if (seen.has(name)) continue;
+
+    for (let index = ctx.callStack.length - 1; index >= 0; index -= 1) {
+      const frame = ctx.callStack[index]!;
+      const binding = ctx.frameBindings.get(frame.id)?.get(name);
+      if (binding) {
+        seen.add(name);
+        captures.push({
+          name: binding.name,
+          value: binding.value,
+          kind: binding.kind,
+          fromFrame: frame.label,
+        });
+        break;
+      }
+    }
+  }
+
+  return captures.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+/** Clone queue snapshots so steps remain immutable. Scope maps are copied per frame id. */
 function snapshot(ctx: RunnerContext, partial: Partial<ExecutionStep>): ExecutionStep {
   assertWithinRunLimits(ctx);
 
@@ -275,11 +474,20 @@ function snapshot(ctx: RunnerContext, partial: Partial<ExecutionStep>): Executio
     phase: partial.phase ?? "run-sync",
     label: partial.label ?? "",
     activeLine: partial.activeLine,
+    sourceLine: partial.sourceLine,
+    sourceLineMapped: partial.sourceLineMapped,
     callStack: ctx.callStack.map((frame) => ({ ...frame })),
     microtaskQueue: ctx.microtaskQueue.map((item) => ({ ...item })),
     macrotaskQueue: ctx.macrotaskQueue.map((item) => ({ ...item })),
     console: [...ctx.consoleLog],
     webApi: [...ctx.webApi],
+    scopes: buildScopeSnapshot(ctx),
+    hoisting: partial.hoisting,
+    closureCaptures:
+      partial.closureCaptures ??
+      (Object.keys(buildClosureCaptureSnapshot(ctx)).length > 0
+        ? buildClosureCaptureSnapshot(ctx)
+        : undefined),
   };
   ctx.steps.push(step);
   return step;
@@ -319,6 +527,31 @@ function findLastAwaitLine(ctx: RunnerContext): number | undefined {
     }
   }
   return undefined;
+}
+
+/** Best-effort editor line for runtime TDZ errors when static analysis missed a path. */
+function findTdzLineInSource(source: string, name: string): number | undefined {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const lines = source.split("\n");
+  let declarationLine: number | undefined;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    if (new RegExp(`\\b(?:let|const)\\s+${escaped}\\b`).test(lines[index]!)) {
+      declarationLine = index + 1;
+      break;
+    }
+  }
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const lineNumber = index + 1;
+    const line = lines[index]!;
+    if (!new RegExp(`\\b${escaped}\\b`).test(line)) continue;
+    if (new RegExp(`\\b(?:let|const|var|function)\\s+${escaped}\\b`).test(line)) continue;
+    if (declarationLine !== undefined && lineNumber >= declarationLine) continue;
+    return lineNumber;
+  }
+
+  return declarationLine;
 }
 
 function scheduleMicrotaskDisplay(
@@ -436,7 +669,7 @@ function enqueueMicrotask(
   snapshot(ctx, {
     phase: "schedule-microtask",
     label: `Enqueued microtask: ${label}`,
-    activeLine: sourceLine,
+    ...editorStepLines(sourceLine),
   });
 }
 
@@ -451,7 +684,7 @@ function runMicrotask(
   snapshot(ctx, {
     phase: "run-microtask",
     label: `Running microtask: ${label}`,
-    activeLine: sourceLine,
+    ...editorStepLines(sourceLine),
   });
   run();
   popFrame(ctx);
@@ -480,7 +713,7 @@ function registerTimer(
   snapshot(ctx, {
     phase: "schedule-macrotask",
     label: formatScheduleLabel(label, delay),
-    activeLine: sourceLine,
+    ...editorStepLines(sourceLine),
   });
   return id;
 }
@@ -531,7 +764,7 @@ function runNextMacrotask(ctx: RunnerContext): boolean {
   snapshot(ctx, {
     phase: "event-loop-tick",
     label: "Event loop picks next macrotask",
-    activeLine: task.sourceLine,
+    ...editorStepLines(task.sourceLine),
   });
 
   const displayLabel = formatMacrotaskLabel(task.label, task.delay ?? 0);
@@ -539,7 +772,7 @@ function runNextMacrotask(ctx: RunnerContext): boolean {
   snapshot(ctx, {
     phase: "run-macrotask",
     label: formatRunLabel(task.label, task.delay ?? 0),
-    activeLine: task.sourceLine,
+    ...editorStepLines(task.sourceLine),
   });
   task.run();
   popFrame(ctx);
@@ -590,7 +823,7 @@ function recordAwaitSuspend(ctx: RunnerContext, source: string, line: number) {
   snapshot(ctx, {
     phase: "await-suspend",
     label: `Paused at ${awaitLabel}`,
-    activeLine: line,
+    ...editorStepLines(line),
   });
   runnerDebug.log("await suspend", { line, awaitLabel });
 }
@@ -604,7 +837,7 @@ function recordAwaitResume(ctx: RunnerContext, source: string) {
   snapshot(ctx, {
     phase: "await-resume",
     label: `Resumed after ${awaitLabel}`,
-    activeLine: resumeLine,
+    ...editorStepLines(resumeLine),
   });
   runnerDebug.log("await resume", { line: resumeLine, awaitLabel });
 }
@@ -616,7 +849,7 @@ function createAsyncHooks(ctx: RunnerContext) {
       snapshot(ctx, {
         phase: "run-sync",
         label: `Enter async function ${name}`,
-        activeLine: line,
+        ...editorStepLines(line),
       });
     },
     onAwaitSuspend: (_label: string, _line: number | undefined) => {
@@ -664,7 +897,7 @@ function createPromiseHooks(ctx: RunnerContext, source: string) {
       snapshot(ctx, {
         phase: "schedule-microtask",
         label: `Enqueued microtask: ${label}`,
-        activeLine: line,
+        ...stepLinesFromResolve(source, sourceLine, "call-site", label),
       });
     },
     onRunMicrotask: (label: string, sourceLine: number | undefined, run: () => void) => {
@@ -686,14 +919,13 @@ function createPromiseHooks(ctx: RunnerContext, source: string) {
       sourceLine: number | undefined,
       run: () => void,
     ) => {
-      const line =
-        (isValidUserLine(source, sourceLine) ? sourceLine : undefined) ??
-        resolveNewPromiseLine(source);
+      const captured = isValidUserLine(source, sourceLine) ? sourceLine : undefined;
+      const line = captured ?? resolveNewPromiseLine(source);
       pushFrame(ctx, label, line);
       snapshot(ctx, {
         phase: "run-sync",
         label: "Running Promise executor",
-        activeLine: line,
+        ...(captured !== undefined ? editorStepLines(captured) : line !== undefined ? { activeLine: line } : {}),
       });
       run();
       popFrame(ctx);
@@ -706,7 +938,6 @@ function createSandbox(
   ctx: RunnerContext,
   PromiseCtor: typeof Promise,
   userSource: string,
-  sourceLineOffset: number,
 ) {
   return {
     console: {
@@ -725,10 +956,15 @@ function createSandbox(
     },
     __execLensSyncEnter: (name: string, line: number) => {
       pushFrame(ctx, name, line);
+      const frame = ctx.callStack.at(-1);
+      const captures = lookupClosureCaptures(ctx, name, line);
+      if (frame && captures?.length) {
+        ctx.frameClosureCaptures.set(frame.id, captures);
+      }
       snapshot(ctx, {
         phase: "run-sync",
         label: `Enter function ${name}`,
-        activeLine: line,
+        ...editorStepLines(line),
       });
       runnerDebug.log("sync enter", { name, line });
     },
@@ -740,12 +976,42 @@ function createSandbox(
       recordAwaitSuspend(ctx, userSource, line);
       return value;
     },
+    __execLensScopeSet: (
+      name: string,
+      kind: ScopeBindingKind | null,
+      value: unknown,
+    ) => {
+      recordScopeBinding(ctx, name, kind, value);
+    },
+    __execLensRecordThis: (recordKind: ThisRecordKind, thisValue: unknown) => {
+      recordThisBinding(ctx, recordKind, thisValue);
+    },
+    __execLensClosureCreated: (line: number, label: string, names: string[]) => {
+      const frame = ctx.callStack.at(-1);
+      if (!frame) return;
+
+      const captures = resolveClosureCaptures(ctx, names);
+      ctx.closureRegistry.set(closureRegistryKey(label, line), captures);
+
+      const captureLabel =
+        captures.length > 0
+          ? captures.map((capture) => capture.name).join(", ")
+          : "none";
+
+      snapshot(ctx, {
+        phase: "closure-capture",
+        label: `Closure created — ${label} captures ${captureLabel}`,
+        ...editorStepLines(line),
+        closureCaptures: { [frame.id]: captures },
+      });
+      runnerDebug.log("closure created", { label, line, captures: captureLabel });
+    },
     setTimeout: (callback: () => void, delay?: number) => {
       const parsedDelay = parseTimerDelay(delay);
       const label = getSetTimeoutLabel(callback);
       const sourceLine = resolveSourceLine(
         userSource,
-        captureUserCallSite(sourceLineOffset),
+        captureUserCallSite(ctx.sourceLineResolver),
         "call-site",
         label,
       );
@@ -789,6 +1055,8 @@ async function executeJavaScriptSnippet(
   options: RunSnippetOptions = {},
 ): Promise<RunResult> {
   const instrumented = options.executable ?? instrumentUserSource(userSource);
+  const sourceLineResolver =
+    options.sourceLineResolver ?? createSourceLineResolver(undefined);
   const limits = readRunnerLimits();
   const ctx: RunnerContext = {
     callStack: [],
@@ -807,12 +1075,15 @@ async function executeJavaScriptSnippet(
     logCounter: 0,
     recordingComplete: false,
     userSource,
+    sourceLineResolver,
     runStartedAt: Date.now(),
     maxSteps: limits.maxSteps,
     wallTimeoutMs: limits.wallTimeoutMs,
+    frameBindings: new Map(),
+    closureRegistry: new Map(),
+    frameClosureCaptures: new Map(),
   };
 
-  const sourceLineOffset = 1;
   const promiseHooks = createPromiseHooks(ctx, userSource);
   const asyncHooks = createAsyncHooks(ctx);
   let runtimeError: string | undefined;
@@ -825,23 +1096,38 @@ async function executeJavaScriptSnippet(
   process.on("unhandledRejection", onUnhandledRejection);
 
   try {
-    installPromiseInstrumentation(promiseHooks, sourceLineOffset);
-    installAsyncInstrumentation(asyncHooks, userSource, sourceLineOffset);
+    installPromiseInstrumentation(promiseHooks, sourceLineResolver);
+    installAsyncInstrumentation(asyncHooks, userSource, sourceLineResolver);
 
     const InstrumentedPromise = createInstrumentedPromise(
       Promise,
       promiseHooks,
-      sourceLineOffset,
+      sourceLineResolver,
     );
-    const sandbox = createSandbox(ctx, InstrumentedPromise, userSource, sourceLineOffset);
+    const sandbox = createSandbox(ctx, InstrumentedPromise, userSource);
 
     snapshot(ctx, {
       phase: "evaluate-script",
       label: "Evaluate script — global execution context created",
-      activeLine: 1,
+      ...editorStepLines(1),
     });
 
     pushFrame(ctx, "Global", 1);
+    const globalFrame = ctx.callStack.at(-1);
+    if (globalFrame) {
+      globalFrame.thisBinding = GLOBAL_THIS_BINDING;
+    }
+
+    const hoisted = options.hoisted ?? [];
+    if (hoisted.length > 0) {
+      snapshot(ctx, {
+        phase: "hoisting",
+        label: `Hoisting — ${hoisted.length} declaration${hoisted.length === 1 ? "" : "s"} lifted before execution`,
+        ...editorStepLines(1),
+        hoisting: hoisted,
+      });
+    }
+
     const vmSandbox = {
       __consoleLog: sandbox.__consoleLog,
       __execLensAsyncEnter: sandbox.__execLensAsyncEnter,
@@ -849,6 +1135,9 @@ async function executeJavaScriptSnippet(
       __execLensSyncEnter: sandbox.__execLensSyncEnter,
       __execLensSyncExit: sandbox.__execLensSyncExit,
       __execLensAwaitWrap: sandbox.__execLensAwaitWrap,
+      __execLensScopeSet: sandbox.__execLensScopeSet,
+      __execLensRecordThis: sandbox.__execLensRecordThis,
+      __execLensClosureCreated: sandbox.__execLensClosureCreated,
       console: sandbox.console,
       setTimeout: sandbox.setTimeout,
       setInterval: sandbox.setInterval,
@@ -859,7 +1148,7 @@ async function executeJavaScriptSnippet(
     snapshot(ctx, {
       phase: "run-sync",
       label: "Running synchronous code on the call stack",
-      activeLine: 1,
+      ...editorStepLines(1),
     });
 
     vm.runInNewContext(`"use strict";\n${instrumented}`, vmSandbox, {
@@ -877,7 +1166,7 @@ async function executeJavaScriptSnippet(
       snapshot(ctx, {
         phase: "error",
         label: `Unhandled rejection: ${runtimeError}`,
-        activeLine: errorLine,
+        ...editorStepLines(errorLine),
       });
       return {
         steps: ctx.steps,
@@ -892,23 +1181,38 @@ async function executeJavaScriptSnippet(
     snapshot(ctx, {
       phase: "complete",
       label: "Execution complete — call stack empty",
-      activeLine: findLastActiveLine(ctx),
+      ...editorStepLines(findLastActiveLine(ctx)),
     });
 
     return { steps: ctx.steps, language: "javascript" };
   } catch (error) {
-    const rawMessage = error instanceof Error ? error.message : "Unknown runtime error";
+    const rawMessage =
+      error instanceof Error
+        ? error.message
+        : typeof error === "string"
+          ? error
+          : String(error ?? "Unknown runtime error");
     const message = rawMessage.includes("Script execution timed out")
       ? `Run exceeded the ${ctx.wallTimeoutMs}ms wall-time limit.`
       : rawMessage;
+    const tdzMatch = message.match(/Cannot access '([^']+)' before initialization/);
+    const errorLine = tdzMatch
+      ? findTdzLineInSource(ctx.userSource, tdzMatch[1] ?? "")
+      : undefined;
+    const teachingHint = tdzMatch
+      ? `Variable '${tdzMatch[1]}' is in the temporal dead zone — declared with let/const but read before its line runs.`
+      : undefined;
     finalizeTerminalSnapshot(ctx);
     snapshot(ctx, {
       phase: "error",
       label: `Runtime error: ${message}`,
+      ...(errorLine !== undefined ? editorStepLines(errorLine) : {}),
     });
     return {
       steps: ctx.steps,
       error: message,
+      errorLine,
+      teachingHint,
       language: "javascript",
     };
   } finally {

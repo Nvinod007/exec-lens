@@ -23,6 +23,7 @@
     "@radix-ui/react-tabs": "^1.1.14",
     "@radix-ui/react-tooltip": "^1.2.9",
     "acorn": "^8.17.0",
+    "@jridgewell/trace-mapping": "^0.3.31",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "esbuild": "^0.28.1",

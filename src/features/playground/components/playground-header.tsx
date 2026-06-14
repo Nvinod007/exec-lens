@@ -7,10 +7,11 @@ import { PlaygroundToolbar } from "@/features/playground/components/playground-t
 import type { EditorPlacement } from "@/features/playground/lib/layout-constants";
 import { ExecutionTimeline } from "@/features/visualizer/components/execution-timeline";
 import type { RunState } from "@/features/visualizer/hooks/use-playback";
-import type { CallStackFrame } from "@/types/execution";
+import type { CallStackFrame, ExecutionStep } from "@/types/execution";
 
 interface PlaygroundHeaderProps {
   stackFrames: CallStackFrame[];
+  currentStep?: ExecutionStep;
   breakpointCount: number;
   currentStepIndex: number;
   totalSteps: number;
@@ -18,11 +19,13 @@ interface PlaygroundHeaderProps {
   selectedExample: string;
   language: "javascript" | "typescript";
   runState: RunState;
-  showPlayback: boolean;
+  showRunResults: boolean;
+  showPlaybackControls: boolean;
   isPlaying: boolean;
   isStale: boolean;
   error?: string;
   errorLine?: number;
+  teachingHint?: string;
   onEditorPlacementChange: (placement: EditorPlacement) => void;
   onExampleChange: (exampleId: string) => void;
   onLanguageChange: (language: "javascript" | "typescript") => void;
@@ -38,6 +41,7 @@ interface PlaygroundHeaderProps {
 /** Top bar — branding, stats, layout controls, run toolbar, and timeline. */
 export function PlaygroundHeader({
   stackFrames,
+  currentStep,
   breakpointCount,
   currentStepIndex,
   totalSteps,
@@ -45,11 +49,13 @@ export function PlaygroundHeader({
   selectedExample,
   language,
   runState,
-  showPlayback,
+  showRunResults,
+  showPlaybackControls,
   isPlaying,
   isStale,
   error,
   errorLine,
+  teachingHint,
   onEditorPlacementChange,
   onExampleChange,
   onLanguageChange,
@@ -76,6 +82,7 @@ export function PlaygroundHeader({
 
         <PlaygroundStatsBar
           stackFrames={stackFrames}
+          currentStep={currentStep}
           breakpointCount={breakpointCount}
           currentStepIndex={currentStepIndex}
           totalSteps={totalSteps}
@@ -98,7 +105,8 @@ export function PlaygroundHeader({
           currentIndex={currentStepIndex}
           totalSteps={totalSteps}
           runState={runState}
-          showPlayback={showPlayback}
+          showRunResults={showRunResults}
+          showPlaybackControls={showPlaybackControls}
           isPlaying={isPlaying}
           isStale={isStale}
           onRun={onRun}
@@ -112,9 +120,12 @@ export function PlaygroundHeader({
       </div>
 
       {error ? (
-        <p className="text-destructive mt-1 text-sm">
-          {errorLine ? `Line ${errorLine}: ${error}` : error}
-        </p>
+        <div className="text-destructive mt-1 space-y-0.5 text-sm">
+          <p>{errorLine ? `Line ${errorLine}: ${error}` : error}</p>
+          {teachingHint ? (
+            <p className="text-muted-foreground text-xs">{teachingHint}</p>
+          ) : null}
+        </div>
       ) : null}
     </header>
   );

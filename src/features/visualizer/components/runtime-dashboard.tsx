@@ -1,18 +1,30 @@
 "use client";
 
+import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 
 import { HintLabel } from "@/components/shared/hint-label";
 import { LensPanel } from "@/features/visualizer/components/lens-panel";
-import { PhasePipeline } from "@/features/visualizer/components/phase-pipeline";
+import { PhasePipeline, ActivePhaseIndicator } from "@/features/visualizer/components/phase-pipeline";
 import { cn } from "@/lib/utils";
-import type { CallStackFrame, ExecutionStep, QueueItem } from "@/types/execution";
+import type {
+  CallStackFrame,
+  ClosureCapture,
+  ExecutionStep,
+  HoistedBindingView,
+  QueueItem,
+  ScopeBinding,
+  ScopeBindingKind,
+  ThisBinding,
+  ThisBindingKind,
+} from "@/types/execution";
 
 interface RuntimeDashboardProps {
   step?: ExecutionStep;
   frames: CallStackFrame[];
-  breakpoints: number[];
   isRunning?: boolean;
+  currentStepPanelCollapsed?: boolean;
+  onCurrentStepPanelCollapsedChange?: (collapsed: boolean) => void;
 }
 
 function QueueLane({
@@ -66,14 +78,186 @@ function QueueLane({
   );
 }
 
-/** Unified runtime view — stack, loop, queues, scope, breakpoints, APIs together. */
+const KIND_LABEL: Record<ScopeBindingKind, string> = {
+  let: "let",
+  const: "const",
+  var: "var",
+  param: "param",
+};
+
+const THIS_KIND_LABEL: Record<ThisBindingKind, string> = {
+  method: "method call",
+  "strict-undefined": "strict / unbound",
+  "lexical-arrow": "lexical arrow",
+  global: "global object",
+};
+
+function ThisBindingChip({ binding }: { binding: ThisBinding }) {
+  const detail =
+    binding.kind === "lexical-arrow" && binding.lexicalFrom
+      ? ` — inherited from ${binding.lexicalFrom}`
+      : "";
+
+  return (
+    <div className="mb-2 space-y-1 rounded-lg border border-sky-500/30 bg-sky-500/10 px-2 py-2">
+      <p className="text-[10px] font-sans font-semibold uppercase tracking-wide text-sky-600 dark:text-sky-400">
+        this binding
+      </p>
+      <p className="font-mono text-sm">
+        <span className="text-primary">this</span>
+        <span className="text-muted-foreground"> = </span>
+        <span>{binding.value}</span>
+      </p>
+      <p className="text-muted-foreground text-xs">
+        {THIS_KIND_LABEL[binding.kind]}
+        {detail}
+      </p>
+    </div>
+  );
+}
+
+function HoistingOverlay({ hoisting }: { hoisting: HoistedBindingView[] }) {
+  return (
+    <div className="mb-2 space-y-1.5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-2 py-2">
+      <p className="text-[10px] font-sans font-semibold uppercase tracking-wide text-amber-600 dark:text-amber-400">
+        Hoisted before execution
+      </p>
+      <ul className="space-y-1 font-mono text-sm">
+        {hoisting.map((binding) => (
+          <li key={`${binding.kind}:${binding.name}:${binding.declarationLine}`} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+            <span className="text-muted-foreground text-[10px] font-sans uppercase tracking-wide">
+              {binding.kind}
+            </span>
+            <span className="text-primary">{binding.name}</span>
+            <span className="text-muted-foreground">→</span>
+            <span>{binding.hoistedValue}</span>
+            <span className="text-muted-foreground text-xs">(decl L{binding.declarationLine})</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function ClosureCaptureList({ captures }: { captures: ClosureCapture[] }) {
+  return (
+    <div className="mb-2 space-y-1.5 rounded-lg border border-violet-500/30 bg-violet-500/10 px-2 py-2">
+      <p className="text-[10px] font-sans font-semibold uppercase tracking-wide text-violet-600 dark:text-violet-400">
+        Captured from outer scope
+      </p>
+      <ul className="space-y-1 font-mono text-sm">
+        {captures.map((capture) => (
+          <li
+            key={capture.name}
+            className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 rounded-md border border-border/30 bg-muted/25 px-2 py-1"
+          >
+            <span className="text-muted-foreground text-[10px] font-sans uppercase tracking-wide">
+              {KIND_LABEL[capture.kind]}
+            </span>
+            <span className="text-primary">{capture.name}</span>
+            <span className="text-muted-foreground">=</span>
+            <span className="truncate">{capture.value}</span>
+            <span className="text-muted-foreground text-xs">from {capture.fromFrame}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function ScopePanel({
+  step,
+  frames,
+}: {
+  step?: ExecutionStep;
+  frames: CallStackFrame[];
+}) {
+  const topFrame = frames.at(-1);
+  const [selectedFrameId, setSelectedFrameId] = useState<string | undefined>(undefined);
+  const preferredFrameId = selectedFrameId ?? topFrame?.id;
+  const activeFrameId =
+    preferredFrameId && frames.some((frame) => frame.id === preferredFrameId)
+      ? preferredFrameId
+      : topFrame?.id;
+  const activeFrame = frames.find((frame) => frame.id === activeFrameId);
+  const bindings: ScopeBinding[] =
+    activeFrameId && step?.scopes ? (step.scopes[activeFrameId] ?? []) : [];
+  const closureCaptures: ClosureCapture[] =
+    activeFrameId && step?.closureCaptures
+      ? (step.closureCaptures[activeFrameId] ?? [])
+      : [];
+  const showHoisting = step?.phase === "hoisting" && (step.hoisting?.length ?? 0) > 0;
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-2">
+      {showHoisting && step?.hoisting ? <HoistingOverlay hoisting={step.hoisting} /> : null}
+
+      {frames.length > 1 ? (
+        <label className="text-muted-foreground flex items-center gap-2 text-xs">
+          <span className="shrink-0 font-medium uppercase tracking-wide">Frame</span>
+          <select
+            value={activeFrameId ?? ""}
+            onChange={(event) => setSelectedFrameId(event.target.value)}
+            className="bg-background/80 min-w-0 flex-1 rounded-md border border-border/50 px-2 py-1 font-mono text-xs"
+          >
+            {[...frames].reverse().map((frame) => (
+              <option key={frame.id} value={frame.id}>
+                {frame.label}
+                {frame.line ? `:${frame.line}` : ""}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+
+      {closureCaptures.length > 0 ? (
+        <ClosureCaptureList captures={closureCaptures} />
+      ) : null}
+
+      {activeFrame?.thisBinding ? (
+        <ThisBindingChip binding={activeFrame.thisBinding} />
+      ) : null}
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {bindings.length === 0 ? (
+          <p className="text-muted-foreground text-sm">
+            {activeFrame
+              ? `No tracked variables in ${activeFrame.label}.`
+              : "No variables in scope yet."}
+          </p>
+        ) : (
+          <ul className="space-y-1 font-mono text-sm">
+            {bindings.map((binding) => (
+              <li
+                key={binding.name}
+                className="flex items-baseline gap-2 rounded-md border border-border/40 bg-muted/35 px-2 py-1"
+              >
+                <span className="text-muted-foreground shrink-0 text-[10px] font-sans uppercase tracking-wide">
+                  {KIND_LABEL[binding.kind]}
+                </span>
+                <span className="text-primary shrink-0">{binding.name}</span>
+                <span className="text-muted-foreground shrink-0">=</span>
+                <span className="min-w-0 truncate">{binding.value}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Unified runtime view — stack, loop, queues, scope, APIs together. */
 export function RuntimeDashboard({
   step,
   frames,
-  breakpoints,
   isRunning = false,
+  currentStepPanelCollapsed = false,
+  onCurrentStepPanelCollapsedChange,
 }: RuntimeDashboardProps) {
   const topDown = [...frames].reverse();
+  const topFrame = frames.at(-1);
+  const topScopeCount = topFrame?.id ? (step?.scopes?.[topFrame.id]?.length ?? 0) : 0;
   const duplicatedLabels = new Set(
     frames
       .map((frame) => frame.label)
@@ -92,6 +276,17 @@ export function RuntimeDashboard({
         tooltip="What the runtime is doing right now — updates as you step through execution."
         accent="teal"
         className="shrink-0"
+        collapsible
+        collapsed={currentStepPanelCollapsed}
+        onCollapsedChange={onCurrentStepPanelCollapsedChange}
+        collapsedSummary={
+          <>
+            <span className="min-w-0 flex-1 truncate">
+              {step?.label ?? "Run a snippet to begin stepping through execution."}
+            </span>
+            <ActivePhaseIndicator step={step} isRunning={isRunning} />
+          </>
+        }
       >
         <p className="mb-2 text-sm leading-snug">
           {step?.label ?? "Run a snippet to begin stepping through execution."}
@@ -100,7 +295,7 @@ export function RuntimeDashboard({
       </LensPanel>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="grid grid-cols-1 gap-2 lg:grid-cols-2 lg:grid-rows-[minmax(8rem,auto)_auto_minmax(4.5rem,9rem)]">
+        <div className="grid grid-cols-1 gap-2 lg:grid-cols-2 lg:grid-rows-[minmax(8rem,auto)_minmax(4.5rem,auto)_minmax(4.5rem,9rem)]">
       <LensPanel
         label="Call stack"
         hint={`${frames.length}`}
@@ -170,37 +365,13 @@ export function RuntimeDashboard({
 
       <LensPanel
         label="Scope"
-        hint="Phase 3"
-        tooltip="Local variables and closure captures — available after scope-chain instrumentation lands in Phase 3."
+        hint={`${topScopeCount}`}
+        tooltip="Live let/const/var/param values, `this` binding, hoisting preview, and closure captures for the selected frame."
         accent="slate"
         surface="recessed"
-        className="min-h-[4.5rem] lg:row-start-2"
+        className="min-h-[4.5rem] lg:col-span-2 lg:row-start-2"
       >
-        <p className="text-muted-foreground text-sm">No variables in scope yet.</p>
-      </LensPanel>
-
-      <LensPanel
-        label="Breakpoints"
-        hint={`${breakpoints.length}`}
-        tooltip="Lines you marked in the editor. Full pause-on-hit arrives in a later phase."
-        accent="rose"
-        surface="recessed"
-        className="min-h-[4.5rem] lg:row-start-2"
-      >
-        {breakpoints.length === 0 ? (
-          <p className="text-muted-foreground text-sm">Click a line number to mark one.</p>
-        ) : (
-          <ul className="flex flex-wrap gap-1.5">
-            {breakpoints.map((line) => (
-              <li
-                key={line}
-                className="rounded-md bg-rose-500/10 px-2 py-0.5 font-mono text-sm text-rose-400"
-              >
-                L{line}
-              </li>
-            ))}
-          </ul>
-        )}
+        <ScopePanel step={step} frames={frames} />
       </LensPanel>
 
       <LensPanel

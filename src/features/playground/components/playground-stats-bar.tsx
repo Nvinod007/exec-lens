@@ -1,8 +1,13 @@
 import { HintChip } from "@/components/shared/hint-label";
-import type { CallStackFrame } from "@/types/execution";
+import {
+  getTopFrameScopeCount,
+  type CallStackFrame,
+  type ExecutionStep,
+} from "@/types/execution";
 
 interface PlaygroundStatsBarProps {
   stackFrames: CallStackFrame[];
+  currentStep?: ExecutionStep;
   breakpointCount: number;
   currentStepIndex: number;
   totalSteps: number;
@@ -11,17 +16,20 @@ interface PlaygroundStatsBarProps {
 /** Header metrics — stack depth, breakpoints, timeline position. */
 export function PlaygroundStatsBar({
   stackFrames,
+  currentStep,
   breakpointCount,
   currentStepIndex,
   totalSteps,
 }: PlaygroundStatsBarProps) {
+  const variableCount = getTopFrameScopeCount(currentStep, stackFrames);
+
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       <HintChip label="Frames" tip="Function frames currently on the call stack.">
         {stackFrames.length} frames
       </HintChip>
-      <HintChip label="Variables" tip="Tracked scope variables — Phase 3.">
-        0 vars
+      <HintChip label="Variables" tip="Tracked bindings in the top call-stack frame.">
+        {variableCount} {variableCount === 1 ? "var" : "vars"}
       </HintChip>
       <HintChip label="Breakpoints" tip="Lines marked in the editor gutter.">
         {breakpointCount} bp

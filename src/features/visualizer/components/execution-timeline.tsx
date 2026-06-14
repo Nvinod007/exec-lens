@@ -13,13 +13,15 @@ import {
 import { ActionTooltip } from "@/components/shared/action-tooltip";
 import { Button } from "@/components/ui/button";
 import { PLAYGROUND_SHORTCUTS } from "@/lib/keyboard/shortcuts";
+import { cn } from "@/lib/utils";
 import type { RunState } from "@/features/visualizer/hooks/use-playback";
 
 interface ExecutionTimelineProps {
   currentIndex: number;
   totalSteps: number;
   runState: RunState;
-  showPlayback: boolean;
+  showRunResults: boolean;
+  showPlaybackControls: boolean;
   isPlaying: boolean;
   isStale: boolean;
   onRun: () => void;
@@ -36,7 +38,8 @@ export function ExecutionTimeline({
   currentIndex,
   totalSteps,
   runState,
-  showPlayback,
+  showRunResults,
+  showPlaybackControls,
   isPlaying,
   isStale,
   onRun,
@@ -48,11 +51,11 @@ export function ExecutionTimeline({
   onLast,
 }: ExecutionTimelineProps) {
   const progress =
-    showPlayback && totalSteps > 1 ? (currentIndex / (totalSteps - 1)) * 100 : 0;
+    showRunResults && totalSteps > 1 ? (currentIndex / (totalSteps - 1)) * 100 : 0;
   const isRunning = runState === "running";
-  const canPlay = showPlayback && !isRunning;
+  const canPlay = showPlaybackControls && !isRunning;
   const playLabel = isPlaying ? "Pause" : "Play";
-  const stepLabel = showPlayback
+  const stepLabel = showRunResults
     ? `Step ${totalSteps === 0 ? 0 : currentIndex + 1} / ${totalSteps}`
     : null;
 
@@ -92,13 +95,20 @@ export function ExecutionTimeline({
           >
             {runButton}
           </ActionTooltip>
-          {showPlayback ? (
-            <>
+          {showRunResults ? (
+            <div
+              className={cn(
+                "flex items-center gap-0.5",
+                !showPlaybackControls && "pointer-events-none invisible",
+              )}
+              aria-hidden={!showPlaybackControls}
+            >
               <ActionTooltip label="First" shortcut={PLAYGROUND_SHORTCUTS.first}>
                 <Button
                   variant="outline"
                   size="icon"
                   onClick={onFirst}
+                  disabled={!showPlaybackControls}
                   aria-label="First step"
                 >
                   <ChevronFirst />
@@ -109,6 +119,7 @@ export function ExecutionTimeline({
                   variant="outline"
                   size="icon"
                   onClick={onPrev}
+                  disabled={!showPlaybackControls}
                   aria-label="Previous step"
                 >
                   <SkipBack />
@@ -128,6 +139,7 @@ export function ExecutionTimeline({
                   variant="outline"
                   size="icon"
                   onClick={onNext}
+                  disabled={!showPlaybackControls}
                   aria-label="Next step"
                 >
                   <SkipForward />
@@ -138,6 +150,7 @@ export function ExecutionTimeline({
                   variant="outline"
                   size="icon"
                   onClick={onLast}
+                  disabled={!showPlaybackControls}
                   aria-label="Last step"
                 >
                   <ChevronLast />
@@ -148,19 +161,20 @@ export function ExecutionTimeline({
                   variant="outline"
                   size="icon"
                   onClick={onReset}
+                  disabled={!showPlaybackControls}
                   aria-label="Reset to first step"
                 >
                   <RotateCcw />
                 </Button>
               </ActionTooltip>
-            </>
+            </div>
           ) : null}
         </div>
         {stepLabel ? (
           <p className="text-muted-foreground font-mono text-xs md:text-sm">{stepLabel}</p>
         ) : null}
       </div>
-      {showPlayback ? (
+      {showRunResults ? (
         <div className="bg-muted/60 h-1 overflow-hidden rounded-full">
           <div
             className="bg-primary h-full transition-all duration-300"

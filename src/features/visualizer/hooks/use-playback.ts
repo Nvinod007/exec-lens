@@ -72,12 +72,14 @@ export function useRunSnippet() {
   const [result, setResult] = useState<RunResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [errorLine, setErrorLine] = useState<number | undefined>();
+  const [teachingHint, setTeachingHint] = useState<string | undefined>();
 
   const run = useCallback(
     async (code: string, language: "javascript" | "typescript") => {
       setRunState("running");
       setError(null);
       setErrorLine(undefined);
+      setTeachingHint(undefined);
 
       try {
         const response = await fetch("/api/run", {
@@ -97,6 +99,7 @@ export function useRunSnippet() {
         if (data.error) {
           setError(data.error);
           setErrorLine(data.errorLine);
+          setTeachingHint(data.teachingHint);
         }
       } catch (runError) {
         setRunState("error");
@@ -111,7 +114,8 @@ export function useRunSnippet() {
     setResult(null);
     setError(null);
     setErrorLine(undefined);
+    setTeachingHint(undefined);
   }, []);
 
-  return { run, reset, runState, result, error, errorLine };
+  return { run, reset, runState, result, error, errorLine, teachingHint };
 }

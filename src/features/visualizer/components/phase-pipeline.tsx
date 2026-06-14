@@ -41,9 +41,13 @@ const PHASES = [
   },
 ] as const;
 
-function getActivePhase(phase: ExecutionStep["phase"]): (typeof PHASES)[number]["id"] {
+export function getActivePhase(
+  phase: ExecutionStep["phase"],
+): (typeof PHASES)[number]["id"] {
   switch (phase) {
     case "evaluate-script":
+    case "hoisting":
+    case "closure-capture":
     case "run-sync":
     case "schedule-microtask":
     case "schedule-macrotask":
@@ -64,6 +68,37 @@ function getActivePhase(phase: ExecutionStep["phase"]): (typeof PHASES)[number][
       return unreachable;
     }
   }
+}
+
+export function getActivePhaseLabel(step?: ExecutionStep): string {
+  const isError = step?.phase === "error";
+  const active = getActivePhase(step?.phase ?? "evaluate-script");
+  const phase = PHASES.find((item) => item.id === active);
+  if (!phase) return "Evaluate";
+  return active === "done" && isError ? "Error" : phase.label;
+}
+
+/** Compact active-phase pill for collapsed Current step summary. */
+export function ActivePhaseIndicator({
+  step,
+  isRunning = false,
+}: PhasePipelineProps) {
+  const isError = step?.phase === "error";
+  const label = getActivePhaseLabel(step);
+
+  return (
+    <span
+      className={cn(
+        "shrink-0 rounded-md px-2 py-0.5 font-mono text-xs font-semibold",
+        isError
+          ? "bg-destructive/15 text-destructive ring-1 ring-destructive/30"
+          : "bg-primary/15 text-primary ring-1 ring-primary/30",
+        isRunning && "animate-pulse",
+      )}
+    >
+      {label}
+    </span>
+  );
 }
 
 /** Horizontal event-loop phase rail with tooltips on each step. */
