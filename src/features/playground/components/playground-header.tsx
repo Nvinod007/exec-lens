@@ -1,6 +1,5 @@
-import { Aperture } from "lucide-react";
-
 import { ThemeToggle } from "@/components/shared/theme-toggle";
+import { ExecLensLogo } from "@/components/shared/exec-lens-logo";
 import { EditorPlacementToggle } from "@/features/playground/components/editor-placement-toggle";
 import { PlaygroundStatsBar } from "@/features/playground/components/playground-stats-bar";
 import { PlaygroundToolbar } from "@/features/playground/components/playground-toolbar";
@@ -73,8 +72,8 @@ export function PlaygroundHeader({
     <header className="bg-card/90 shrink-0 border-b border-border/60 px-3 py-2 md:px-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <div className="bg-primary/15 text-primary flex size-8 items-center justify-center rounded-full">
-            <Aperture className="size-4" />
+          <div className="bg-primary/15 text-primary flex size-8 items-center justify-center rounded-full p-1.5">
+            <ExecLensLogo variant="aperture" />
           </div>
           <div>
             <h1 className="text-lg font-bold">ExecLens</h1>
