@@ -9,6 +9,7 @@ interface PlaygroundStatsBarProps {
   stackFrames: CallStackFrame[];
   currentStep?: ExecutionStep;
   breakpointCount: number;
+  pausedAtBreakpoint?: boolean;
   currentStepIndex: number;
   totalSteps: number;
 }
@@ -18,6 +19,7 @@ export function PlaygroundStatsBar({
   stackFrames,
   currentStep,
   breakpointCount,
+  pausedAtBreakpoint = false,
   currentStepIndex,
   totalSteps,
 }: PlaygroundStatsBarProps) {
@@ -33,6 +35,9 @@ export function PlaygroundStatsBar({
       </HintChip>
       <HintChip label="Breakpoints" tip="Lines marked in the editor gutter.">
         {breakpointCount} bp
+        {pausedAtBreakpoint ? (
+          <span className="text-amber-600 dark:text-amber-400"> · paused</span>
+        ) : null}
       </HintChip>
       <HintChip label="Step" tip="Current position in the execution timeline.">
         {totalSteps === 0 ? 0 : currentStepIndex + 1}/{totalSteps}

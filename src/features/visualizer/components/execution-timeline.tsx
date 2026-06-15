@@ -23,6 +23,7 @@ interface ExecutionTimelineProps {
   showRunResults: boolean;
   showPlaybackControls: boolean;
   isPlaying: boolean;
+  pausedAtBreakpoint?: boolean;
   isStale: boolean;
   onRun: () => void;
   onReset: () => void;
@@ -41,6 +42,7 @@ export function ExecutionTimeline({
   showRunResults,
   showPlaybackControls,
   isPlaying,
+  pausedAtBreakpoint = false,
   isStale,
   onRun,
   onReset,
@@ -54,7 +56,7 @@ export function ExecutionTimeline({
     showRunResults && totalSteps > 1 ? (currentIndex / (totalSteps - 1)) * 100 : 0;
   const isRunning = runState === "running";
   const canPlay = showPlaybackControls && !isRunning;
-  const playLabel = isPlaying ? "Pause" : "Play";
+  const playLabel = isPlaying ? "Pause" : pausedAtBreakpoint ? "Continue" : "Play";
   const stepLabel = showRunResults
     ? `Step ${totalSteps === 0 ? 0 : currentIndex + 1} / ${totalSteps}`
     : null;

@@ -17,6 +17,7 @@ export function PlaygroundPage() {
     setLanguage,
     selectedExample,
     breakpoints,
+    pausedAtBreakpoint,
     editorPlacement,
     editorRatio,
     consolePosition,
@@ -95,6 +96,7 @@ export function PlaygroundPage() {
           stackFrames={stackFrames}
           currentStep={showRunResults ? currentStep : undefined}
           breakpointCount={breakpoints.length}
+          pausedAtBreakpoint={showRunResults ? pausedAtBreakpoint : false}
           currentStepIndex={showRunResults ? playback.currentIndex : 0}
           totalSteps={showRunResults ? playback.totalSteps : 0}
           editorPlacement={editorPlacement}

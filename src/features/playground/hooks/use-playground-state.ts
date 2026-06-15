@@ -69,6 +69,7 @@ export function usePlaygroundState() {
           | "editorRatio"
           | "consoleRatio"
           | "currentStepPanelCollapsed"
+          | "breakpoints"
         >
       >,
     ) => {
@@ -82,6 +83,7 @@ export function usePlaygroundState() {
           consoleRatio: overrides?.consoleRatio ?? consoleRatio,
           currentStepPanelCollapsed:
             overrides?.currentStepPanelCollapsed ?? currentStepPanelCollapsed,
+          breakpoints: overrides?.breakpoints ?? breakpoints,
         });
       };
 
@@ -100,7 +102,7 @@ export function usePlaygroundState() {
         write();
       }, LAYOUT_RATIO_DEBOUNCE_MS);
     },
-    [consolePosition, consoleRatio, currentStepPanelCollapsed, editorPlacement, editorRatio],
+    [breakpoints, consolePosition, consoleRatio, currentStepPanelCollapsed, editorPlacement, editorRatio],
   );
 
   const persistSession = useCallback(
@@ -159,6 +161,7 @@ export function usePlaygroundState() {
     setConsolePosition(prefs.consolePosition);
     setConsoleRatio(clampRatio(prefs.consoleRatio, CONSOLE_MIN, CONSOLE_MAX));
     setCurrentStepPanelCollapsed(prefs.currentStepPanelCollapsed);
+    setBreakpoints(prefs.breakpoints);
 
     const session = loadSession();
     if (session) {
@@ -200,7 +203,7 @@ export function usePlaygroundState() {
     useRunSnippet();
   const steps = result?.steps ?? [];
 
-  const playback = usePlayback({ steps, speedMs: 850 });
+  const playback = usePlayback({ steps, speedMs: 850, breakpoints });
   const currentStep = playback.currentStep;
   const stackFrames = currentStep?.callStack ?? [];
   const consoleEntries = currentStep?.console ?? [];
@@ -253,12 +256,14 @@ export function usePlaygroundState() {
   };
 
   const handleToggleBreakpoint = useCallback((line: number) => {
-    setBreakpoints((prev) =>
-      prev.includes(line)
+    setBreakpoints((prev) => {
+      const next = prev.includes(line)
         ? prev.filter((l) => l !== line)
-        : [...prev, line].sort((a, b) => a - b),
-    );
-  }, []);
+        : [...prev, line].sort((a, b) => a - b);
+      persistPreferences(true, { breakpoints: next });
+      return next;
+    });
+  }, [persistPreferences]);
 
   const handleExampleChange = (exampleId: string) => {
     const example = EXAMPLE_SNIPPETS.find((item) => item.id === exampleId);
@@ -366,6 +371,7 @@ export function usePlaygroundState() {
     setLanguage,
     selectedExample,
     breakpoints,
+    pausedAtBreakpoint: playback.pausedAtBreakpoint,
     editorPlacement,
     editorRatio,
     consolePosition,

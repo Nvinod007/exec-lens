@@ -13,6 +13,7 @@ interface PlaygroundHeaderProps {
   stackFrames: CallStackFrame[];
   currentStep?: ExecutionStep;
   breakpointCount: number;
+  pausedAtBreakpoint?: boolean;
   currentStepIndex: number;
   totalSteps: number;
   editorPlacement: EditorPlacement;
@@ -43,6 +44,7 @@ export function PlaygroundHeader({
   stackFrames,
   currentStep,
   breakpointCount,
+  pausedAtBreakpoint,
   currentStepIndex,
   totalSteps,
   editorPlacement,
@@ -84,6 +86,7 @@ export function PlaygroundHeader({
           stackFrames={stackFrames}
           currentStep={currentStep}
           breakpointCount={breakpointCount}
+          pausedAtBreakpoint={pausedAtBreakpoint}
           currentStepIndex={currentStepIndex}
           totalSteps={totalSteps}
         />
@@ -108,6 +111,7 @@ export function PlaygroundHeader({
           showRunResults={showRunResults}
           showPlaybackControls={showPlaybackControls}
           isPlaying={isPlaying}
+          pausedAtBreakpoint={pausedAtBreakpoint}
           isStale={isStale}
           onRun={onRun}
           onReset={onReset}

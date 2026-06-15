@@ -33,7 +33,7 @@ interface LensPanelProps {
   collapsible?: boolean;
   collapsed?: boolean;
   onCollapsedChange?: (collapsed: boolean) => void;
-  /** Inline summary shown below the header when collapsed. */
+  /** Inline summary shown beside the title when collapsed (single header row). */
   collapsedSummary?: ReactNode;
 }
 
@@ -66,7 +66,12 @@ export function LensPanel({
         className,
       )}
     >
-      <header className="flex shrink-0 items-center gap-1 px-3 py-2">
+      <header
+        className={cn(
+          "flex shrink-0 items-center gap-1 px-3",
+          collapsible && collapsed ? "py-1.5" : "py-2",
+        )}
+      >
         {collapsible ? (
           <button
             type="button"
@@ -88,13 +93,13 @@ export function LensPanel({
         ) : null}
         <div
           className={cn(
-            "flex min-w-0 flex-1 items-baseline justify-between gap-2",
+            "flex min-w-0 flex-1 items-center gap-2",
             collapsible && "cursor-pointer",
           )}
           onClick={collapsible ? toggleCollapsed : undefined}
         >
           <span
-            className="min-w-0"
+            className="shrink-0"
             onClick={(event) => event.stopPropagation()}
             onKeyDown={(event) => event.stopPropagation()}
           >
@@ -104,17 +109,18 @@ export function LensPanel({
               className="text-sm font-semibold tracking-widest uppercase opacity-90"
             />
           </span>
+          {collapsible && collapsed && collapsedSummary ? (
+            <div className="text-muted-foreground flex min-w-0 flex-1 items-center gap-2 overflow-hidden text-sm">
+              {collapsedSummary}
+            </div>
+          ) : null}
           {hint ? (
-            <span className="text-muted-foreground font-mono text-xs">{hint}</span>
+            <span className="text-muted-foreground shrink-0 font-mono text-xs">{hint}</span>
           ) : null}
         </div>
       </header>
-      {collapsible && collapsed ? (
-        collapsedSummary ? (
-          <div className="flex min-w-0 items-center gap-2 px-3 pb-2 text-sm leading-snug">
-            {collapsedSummary}
-          </div>
-        ) : null
+      {collapsed ? (
+        <div id={contentId} hidden />
       ) : (
         <div id={contentId} className="min-h-0 flex-1 overflow-auto px-3 pb-3">
           {children}

@@ -6,7 +6,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView, lineNumbers, highlightActiveLineGutter } from "@codemirror/view";
 import { useCallback, useEffect, useRef } from "react";
 
-import { createBreakpointGutter } from "@/features/editor/lib/breakpoint-gutter";
+import { createBreakpointGutter, setBreakpointsEffect } from "@/features/editor/lib/breakpoint-gutter";
 import {
   createEditorShortcutKeymap,
   type EditorShortcutHandlers,
@@ -167,13 +167,22 @@ export function CodeEditor({
     const state = EditorState.create({
       doc: value,
       extensions: [
-        lineNumbers(),
+        lineNumbers(
+          onToggleRef.current
+            ? {
+                domEventHandlers: {
+                  mousedown(view, line, event) {
+                    event.preventDefault();
+                    onToggleRef.current?.(view.state.doc.lineAt(line.from).number);
+                    return true;
+                  },
+                },
+              }
+            : undefined,
+        ),
         lintGutter(),
         ...(onToggleRef.current
-          ? createBreakpointGutter(
-              () => breakpointsRef.current,
-              (line) => onToggleRef.current?.(line),
-            )
+          ? createBreakpointGutter((line) => onToggleRef.current?.(line))
           : []),
         createSnippetLinter(language),
         ...shortcutKeymap,
@@ -190,6 +199,9 @@ export function CodeEditor({
 
     const view = new EditorView({ state, parent: hostRef.current });
     viewRef.current = view;
+    if (breakpointsRef.current.length > 0) {
+      view.dispatch({ effects: setBreakpointsEffect.of(breakpointsRef.current) });
+    }
     applyStepHighlight(view, highlightLineRef.current);
 
     return () => {
@@ -211,7 +223,9 @@ export function CodeEditor({
   }, [value]);
 
   useEffect(() => {
-    viewRef.current?.dispatch({});
+    const view = viewRef.current;
+    if (!view) return;
+    view.dispatch({ effects: setBreakpointsEffect.of(breakpoints) });
   }, [breakpoints]);
 
   useEffect(() => {

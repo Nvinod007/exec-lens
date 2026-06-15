@@ -26,6 +26,7 @@ export interface PlaygroundPreferences {
   editorRatio: number;
   consoleRatio: number;
   currentStepPanelCollapsed: boolean;
+  breakpoints: number[];
 }
 
 export interface CustomDraft {
@@ -49,7 +50,16 @@ const DEFAULT_PREFERENCES: PlaygroundPreferences = {
   editorRatio: 0.42,
   consoleRatio: CONSOLE_DEFAULT,
   currentStepPanelCollapsed: false,
+  breakpoints: [],
 };
+
+function parseBreakpoints(raw: unknown): number[] {
+  if (!Array.isArray(raw)) return [];
+  const lines = raw.filter(
+    (line): line is number => typeof line === "number" && Number.isInteger(line) && line >= 1,
+  );
+  return [...new Set(lines)].sort((a, b) => a - b);
+}
 
 function readJson<T>(key: string): T | null {
   if (typeof window === "undefined") return null;
@@ -106,6 +116,7 @@ function parsePreferences(raw: unknown): PlaygroundPreferences | null {
       typeof data.currentStepPanelCollapsed === "boolean"
         ? data.currentStepPanelCollapsed
         : false,
+    breakpoints: parseBreakpoints(data.breakpoints),
   };
 }
 

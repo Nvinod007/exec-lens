@@ -281,7 +281,7 @@ export function RuntimeDashboard({
         onCollapsedChange={onCurrentStepPanelCollapsedChange}
         collapsedSummary={
           <>
-            <span className="min-w-0 flex-1 truncate">
+            <span className="text-foreground min-w-0 flex-1 truncate">
               {step?.label ?? "Run a snippet to begin stepping through execution."}
             </span>
             <ActivePhaseIndicator step={step} isRunning={isRunning} />

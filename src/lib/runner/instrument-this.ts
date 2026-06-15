@@ -50,6 +50,27 @@ function bodyHasSyncEnter(source: string, body: AcornNode): boolean {
   return /^\{\s*\n\s*__execLensSyncEnter\(/.test(slice);
 }
 
+function bodyHasAsyncEnter(source: string, body: AcornNode): boolean {
+  const bodyStart = body.start;
+  if (typeof bodyStart !== "number") return false;
+  const slice = source.slice(bodyStart, (body.end as number | undefined) ?? bodyStart + 120);
+  return /^\{\s*\n\s*__execLensAsyncEnter\(/.test(slice);
+}
+
+function insertAfterBodyHook(
+  inserts: Insert[],
+  source: string,
+  body: AcornNode,
+  hookPattern: RegExp,
+  text: string,
+) {
+  const bodyStart = body.start as number;
+  const slice = source.slice(bodyStart);
+  const match = slice.match(hookPattern);
+  const insertAt = match ? bodyStart + match[0].length : bodyStart + 1;
+  inserts.push({ index: insertAt, text });
+}
+
 function insertSyncExit(inserts: Insert[], body: AcornNode, label: string) {
   const bodyEnd = body.end;
   if (typeof bodyEnd !== "number" || bodyEnd <= 0) return;
@@ -79,12 +100,25 @@ function instrumentBlockBody(
 
   const recordCall = `__execLensRecordThis(${JSON.stringify(recordKind)}, this);`;
 
+  if (bodyHasAsyncEnter(source, body)) {
+    insertAfterBodyHook(
+      inserts,
+      source,
+      body,
+      /^\{\s*\n\s*__execLensAsyncEnter\([^)]+\);\s*\n/,
+      `  ${recordCall}\n`,
+    );
+    return;
+  }
+
   if (bodyHasSyncEnter(source, body)) {
-    const bodyStart = body.start as number;
-    const slice = source.slice(bodyStart);
-    const match = slice.match(/^\{\s*\n\s*__execLensSyncEnter\([^)]+\);\s*\n/);
-    const insertAt = match ? bodyStart + match[0].length : bodyStart + 1;
-    inserts.push({ index: insertAt, text: `  ${recordCall}\n` });
+    insertAfterBodyHook(
+      inserts,
+      source,
+      body,
+      /^\{\s*\n\s*__execLensSyncEnter\([^)]+\);\s*\n/,
+      `  ${recordCall}\n`,
+    );
     return;
   }
 

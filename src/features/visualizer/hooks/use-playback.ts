@@ -1,29 +1,57 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
-import type { ExecutionStep, RunResult } from "@/types/execution";
+import { getStepEditorLine, type ExecutionStep, type RunResult } from "@/types/execution";
 
 interface UsePlaybackOptions {
   steps: ExecutionStep[];
   autoPlay?: boolean;
   speedMs?: number;
+  breakpoints?: number[];
+}
+
+function stepHitsBreakpoint(
+  step: ExecutionStep | undefined,
+  breakpointSet: ReadonlySet<number>,
+): boolean {
+  if (!step || breakpointSet.size === 0) return false;
+  const line = getStepEditorLine(step);
+  return line !== undefined && breakpointSet.has(line);
 }
 
 /** Controls timeline scrubbing and autoplay for execution steps. */
-export function usePlayback({ steps, autoPlay = false, speedMs = 900 }: UsePlaybackOptions) {
+export function usePlayback({
+  steps,
+  autoPlay = false,
+  speedMs = 900,
+  breakpoints = [],
+}: UsePlaybackOptions) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(autoPlay);
 
+  const breakpointSet = useMemo(() => new Set(breakpoints), [breakpoints]);
   const maxIndex = Math.max(steps.length - 1, 0);
   const currentStep = steps[currentIndex];
 
+  const pauseOnBreakpoint = useCallback(
+    (step: ExecutionStep | undefined) => {
+      if (stepHitsBreakpoint(step, breakpointSet)) {
+        setIsPlaying(false);
+      }
+    },
+    [breakpointSet],
+  );
+
   const goToStart = useCallback(() => setCurrentIndex(0), []);
   const goToEnd = useCallback(() => setCurrentIndex(maxIndex), [maxIndex]);
-  const stepForward = useCallback(
-    () => setCurrentIndex((index) => Math.min(index + 1, maxIndex)),
-    [maxIndex],
-  );
+  const stepForward = useCallback(() => {
+    setCurrentIndex((index) => {
+      const next = Math.min(index + 1, maxIndex);
+      pauseOnBreakpoint(steps[next]);
+      return next;
+    });
+  }, [maxIndex, pauseOnBreakpoint, steps]);
   const stepBackward = useCallback(
     () => setCurrentIndex((index) => Math.max(index - 1, 0)),
     [],
@@ -43,18 +71,26 @@ export function usePlayback({ steps, autoPlay = false, speedMs = 900 }: UsePlayb
           setIsPlaying(false);
           return index;
         }
-        return index + 1;
+        const next = index + 1;
+        pauseOnBreakpoint(steps[next]);
+        return next;
       });
     }, speedMs);
 
     return () => window.clearInterval(timer);
-  }, [isPlaying, maxIndex, speedMs, steps.length]);
+  }, [isPlaying, maxIndex, pauseOnBreakpoint, speedMs, steps]);
+
+  const pausedAtBreakpoint =
+    breakpointSet.size > 0 &&
+    !isPlaying &&
+    stepHitsBreakpoint(currentStep, breakpointSet);
 
   return {
     currentIndex,
     currentStep,
     isPlaying,
     setIsPlaying,
+    pausedAtBreakpoint,
     goToStart,
     goToEnd,
     stepForward,
